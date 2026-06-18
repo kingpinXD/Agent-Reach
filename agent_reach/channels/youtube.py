@@ -1,13 +1,21 @@
 # -*- coding: utf-8 -*-
 """YouTube — check if yt-dlp is available with JS runtime."""
 
+import re
 import shutil
+import subprocess
+import tempfile
+from pathlib import Path
 
 from agent_reach.probe import probe_command
 from agent_reach.utils.paths import get_ytdlp_config_path, render_ytdlp_fix_command
+from agent_reach.utils.process import utf8_subprocess_env
 from agent_reach.utils.text import read_utf8_text
 
 from .base import Channel
+
+# Inline cue-timestamp (<00:00:01.234>) and <c>...</c> styling yt-dlp emits in auto-subs.
+_VTT_INLINE_TAG = re.compile(r"<[^>]+>")
 
 
 def _has_js_runtime_config(config_path) -> bool:
@@ -18,6 +26,105 @@ def _has_js_runtime_config(config_path) -> bool:
         return "--js-runtimes" in read_utf8_text(config_path)
     except OSError:
         return False
+
+
+def _clean_vtt(vtt_text: str) -> str:
+    """Reduce raw VTT to a single space-separated paragraph of spoken text.
+
+    Strips the WEBVTT header, metadata lines, cue-timing lines, inline timing
+    and styling tags, then collapses the consecutive duplicate lines that
+    YouTube auto-captions emit (each cue repeats the previous line as it scrolls).
+    """
+    lines = []
+    for raw in vtt_text.splitlines():
+        line = _VTT_INLINE_TAG.sub("", raw).strip()
+        if not line or "-->" in line:
+            continue
+        if line == "WEBVTT" or line.startswith(("Kind:", "Language:")):
+            continue
+        if lines and lines[-1] == line:
+            continue
+        lines.append(line)
+    return " ".join(lines)
+
+
+def _download_subtitles(url: str, lang: str, tmpdir: str, auto: bool) -> str | None:
+    """Fetch one subtitle track via yt-dlp; return raw VTT text or None.
+
+    Never raises on a yt-dlp failure — a missing track or a dead link returns
+    None so the caller can fall through to the next source.
+    """
+    sub_flag = "--write-auto-sub" if auto else "--write-sub"
+    cmd = [
+        "yt-dlp",
+        "--skip-download",
+        sub_flag,
+        "--sub-format",
+        "vtt",
+        "--sub-lang",
+        lang,
+        "-o",
+        str(Path(tmpdir) / "%(id)s"),
+        url,
+    ]
+    try:
+        proc = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=120,
+            env=utf8_subprocess_env(),
+        )
+    except (subprocess.TimeoutExpired, OSError):
+        return None
+    if proc.returncode != 0:
+        return None
+
+    files = sorted(Path(tmpdir).glob(f"*.{lang}.vtt"))
+    if not files:
+        return None
+    return read_utf8_text(files[0]) or None
+
+
+def _fetch_metadata(url: str) -> tuple[str | None, str | None]:
+    """Return (channel_name, channel_id) via one lightweight yt-dlp print call.
+
+    No media or subtitle download. Falls back to the uploader name when the
+    channel field is empty. Never raises — any failure yields (None, None) so a
+    missing channel can't change a link's transcript status.
+    """
+    cmd = [
+        "yt-dlp",
+        "--skip-download",
+        "--no-warnings",
+        "--print",
+        "%(channel)s\t%(channel_id)s\t%(uploader)s",
+        url,
+    ]
+    try:
+        proc = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=60,
+            env=utf8_subprocess_env(),
+        )
+    except (subprocess.TimeoutExpired, OSError):
+        return None, None
+    if proc.returncode != 0:
+        return None, None
+
+    parts = proc.stdout.strip().split("\t")
+    if len(parts) < 3:
+        return None, None
+
+    def _clean(value: str) -> str | None:
+        # yt-dlp prints the literal "NA" for unset template fields.
+        value = value.strip()
+        return value or None if value != "NA" else None
+
+    channel, channel_id, uploader = (_clean(p) for p in parts[:3])
+    return (channel or uploader), channel_id
 
 
 class YouTubeChannel(Channel):
@@ -89,3 +196,36 @@ class YouTubeChannel(Channel):
 
         return _transcribe(url, provider=provider, config=config)
 
+    def fetch_transcript(
+        self,
+        url: str,
+        *,
+        lang: str = "en",
+        config=None,
+        allow_whisper: bool = True,
+    ) -> tuple[str | None, str | None]:
+        """Return (transcript, source) for a video, trying cheapest source first.
+
+        Order: manual subtitles → auto subtitles → Whisper transcription.
+        source is one of "subtitles", "auto_subtitles", "whisper", or None when
+        nothing is available. Whisper failures fall through to (None, None) so a
+        single bad link can never raise out of a batch.
+        """
+        with tempfile.TemporaryDirectory(prefix="yt-subs-") as tmpdir:
+            manual = _download_subtitles(url, lang, tmpdir, auto=False)
+            if manual:
+                return _clean_vtt(manual), "subtitles"
+
+            auto = _download_subtitles(url, lang, tmpdir, auto=True)
+            if auto:
+                return _clean_vtt(auto), "auto_subtitles"
+
+        if not allow_whisper:
+            return None, None
+
+        from agent_reach.transcribe import TranscribeError
+
+        try:
+            return self.transcribe(url, config=config), "whisper"
+        except TranscribeError:
+            return None, None

@@ -122,6 +122,17 @@ def main():
     p_tr.add_argument("-o", "--output", default=None,
                       help="Write transcript to a file instead of stdout")
 
+    # ── youtube ──
+    p_yt = sub.add_parser("youtube", help="Batch-fetch YouTube transcripts to JSONL (subs → auto-subs → Whisper)")
+    p_yt.add_argument("url", nargs="?", default=None, help="A single YouTube URL")
+    p_yt.add_argument("--file", default=None,
+                      help="File of YouTube URLs, one per line (# comments and blank lines skipped)")
+    p_yt.add_argument("-o", "--output", default=None,
+                      help="Write JSONL here instead of stdout")
+    p_yt.add_argument("--lang", default="en", help="Subtitle language (default: en)")
+    p_yt.add_argument("--no-whisper", action="store_true",
+                      help="Disable the Whisper fallback (subtitles only)")
+
     sub.add_parser("check-update", help="Check for new versions and changes")
 
     # ── watch ──
@@ -163,6 +174,8 @@ def main():
         _cmd_format(args)
     elif args.command == "transcribe":
         _cmd_transcribe(args)
+    elif args.command == "youtube":
+        _cmd_youtube(args)
 
 
 # ── Command handlers ────────────────────────────────
@@ -1127,6 +1140,94 @@ def _cmd_transcribe(args):
         print(f"✅ Transcript written to {args.output}")
     else:
         print(text)
+
+
+def _extract_video_id(url: str):
+    """Pull a YouTube video id out of a URL; return None if unparseable."""
+    from urllib.parse import parse_qs, urlparse
+
+    parsed = urlparse(url)
+    host = parsed.netloc.lower()
+    if "youtu.be" in host:
+        vid = parsed.path.strip("/").split("/")[0]
+        return vid or None
+    if "youtube.com" in host:
+        if parsed.path.startswith("/shorts/"):
+            vid = parsed.path.split("/shorts/", 1)[1].split("/")[0]
+            return vid or None
+        vid = parse_qs(parsed.query).get("v", [None])[0]
+        return vid or None
+    return None
+
+
+def _read_link_file(path: str):
+    """Read a links file: one URL per line, skipping blanks and # comments."""
+    from agent_reach.utils.text import read_utf8_text
+
+    links = []
+    for line in read_utf8_text(path).splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        links.append(line)
+    return links
+
+
+def _cmd_youtube(args):
+    """Batch-fetch YouTube transcripts and emit one JSON record per link."""
+    from agent_reach.channels.youtube import YouTubeChannel, _fetch_metadata
+    from agent_reach.config import Config
+
+    if bool(args.url) == bool(args.file):
+        print("❌ Provide exactly one of a URL argument or --file")
+        sys.exit(1)
+
+    links = _read_link_file(args.file) if args.file else [args.url]
+
+    config = Config()
+    youtube = YouTubeChannel()
+    allow_whisper = not args.no_whisper
+
+    out = open(args.output, "w", encoding="utf-8") if args.output else None
+    ok = 0
+    errors = 0
+    try:
+        for url in links:
+            channel_name, channel_id = _fetch_metadata(url)
+            record = {
+                "url": url,
+                "video_id": _extract_video_id(url),
+                "channel": channel_name,
+                "channel_id": channel_id,
+            }
+            try:
+                transcript, source = youtube.fetch_transcript(
+                    url, lang=args.lang, config=config, allow_whisper=allow_whisper
+                )
+            except Exception as e:  # one bad link must never abort the batch
+                record.update({"transcript": None, "source": None, "status": "error", "error": str(e)})
+                errors += 1
+            else:
+                if transcript is None:
+                    record.update({"transcript": None, "source": None, "status": "error",
+                                   "error": "no transcript available"})
+                    errors += 1
+                else:
+                    record.update({"transcript": transcript, "source": source, "status": "ok"})
+                    ok += 1
+
+            line = json.dumps(record, ensure_ascii=False)
+            if out:
+                out.write(line + "\n")
+                out.flush()  # append-as-you-go so partial progress survives a crash
+            else:
+                print(line)
+    finally:
+        if out:
+            out.close()
+
+    dest = args.output if args.output else "stdout"
+    print(f"✅ {ok} ok / {errors} errors → {dest}", file=sys.stderr)
 
 
 def _parse_twitter_cookie_input(value: str):

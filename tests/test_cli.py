@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """Tests for Agent Reach CLI."""
 
+import json
 import shutil
 import subprocess
 from unittest.mock import patch
@@ -18,7 +19,7 @@ class TestCLI:
                 main()
         assert exc_info.value.code == 0
         captured = capsys.readouterr()
-        assert "Agent Reach v" in captured.out
+        assert "Agent Reach v1.6.1" in captured.out
 
     def test_no_command_shows_help(self, capsys):
         with pytest.raises(SystemExit) as exc_info:
@@ -222,3 +223,78 @@ class TestWatchVersionCompare:
         out = capsys.readouterr().out
         assert "新版本可用" not in out
         assert "全部正常" in out
+
+
+class TestYouTubeCommand:
+    def test_youtube_is_registered_subcommand(self):
+        # Patch the handler so we only prove the command is wired, not its behavior.
+        with patch("agent_reach.cli._cmd_youtube") as handler:
+            with patch("sys.argv", ["agent-reach", "youtube", "https://youtu.be/a"]):
+                main()
+        handler.assert_called_once()
+
+    def test_link_file_skips_comments_and_blanks(self, tmp_path):
+        f = tmp_path / "links.txt"
+        f.write_text(
+            "https://youtu.be/a\n\n# a comment\n  \nhttps://youtu.be/b\n",
+            encoding="utf-8",
+        )
+        assert cli._read_link_file(str(f)) == ["https://youtu.be/a", "https://youtu.be/b"]
+
+    def test_extract_video_id(self):
+        assert cli._extract_video_id("https://www.youtube.com/watch?v=abc123") == "abc123"
+        assert cli._extract_video_id("https://youtu.be/xyz789") == "xyz789"
+        assert cli._extract_video_id("https://www.youtube.com/shorts/M6gat-hai0I") == "M6gat-hai0I"
+        assert cli._extract_video_id("https://example.com/foo") is None
+
+    def test_cmd_youtube_writes_jsonl_and_keeps_going_on_error(self, tmp_path, capsys):
+        links = tmp_path / "links.txt"
+        links.write_text(
+            "https://youtu.be/good\nhttps://youtu.be/empty\nhttps://youtu.be/boom\n",
+            encoding="utf-8",
+        )
+        out = tmp_path / "out.jsonl"
+
+        def fake_fetch(url, *, lang="en", config=None, allow_whisper=True):
+            if url.endswith("good"):
+                return "a transcript", "subtitles"
+            if url.endswith("empty"):
+                return None, None
+            raise RuntimeError("kaboom")
+
+        with patch(
+            "agent_reach.channels.youtube.YouTubeChannel.fetch_transcript",
+            side_effect=fake_fetch,
+        ), patch(
+            "agent_reach.channels.youtube._fetch_metadata",
+            return_value=("Some Channel", "UC123"),
+        ):
+            with patch("sys.argv", ["agent-reach", "youtube", "--file", str(links), "-o", str(out)]):
+                main()
+
+        records = [json.loads(line) for line in out.read_text(encoding="utf-8").splitlines()]
+        assert len(records) == 3
+        assert records[0] == {
+            "url": "https://youtu.be/good",
+            "video_id": "good",
+            "channel": "Some Channel",
+            "channel_id": "UC123",
+            "transcript": "a transcript",
+            "source": "subtitles",
+            "status": "ok",
+        }
+        # Channel fields ride along on error records too.
+        assert records[1]["status"] == "error"
+        assert records[1]["error"] == "no transcript available"
+        assert records[1]["channel"] == "Some Channel"
+        assert records[1]["channel_id"] == "UC123"
+        assert records[2]["status"] == "error"
+        assert "kaboom" in records[2]["error"]
+        assert records[2]["channel"] == "Some Channel"
+        assert "1 ok / 2 errors" in capsys.readouterr().err
+
+    def test_cmd_youtube_requires_exactly_one_input(self):
+        with pytest.raises(SystemExit) as exc:
+            with patch("sys.argv", ["agent-reach", "youtube"]):
+                main()
+        assert exc.value.code == 1

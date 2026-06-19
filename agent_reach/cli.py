@@ -113,7 +113,6 @@ def main():
     p_format = sub.add_parser("format", help="Clean and format platform API output")
     p_format.add_argument("platform", choices=["xhs"], help="Platform to format (xhs)")
 
-    # ── check-update ──
     # ── transcribe ──
     p_tr = sub.add_parser("transcribe", help="Transcribe a URL or local audio file (Whisper via Groq/OpenAI)")
     p_tr.add_argument("source", help="Audio/video URL or local file path")
@@ -121,6 +120,21 @@ def main():
                       help="Transcription provider (default: auto = groq → openai fallback)")
     p_tr.add_argument("-o", "--output", default=None,
                       help="Write transcript to a file instead of stdout")
+
+    # ── channels ──
+    p_ch = sub.add_parser("channels", help="List finance-channel uploads by recency into a links file (deterministic)")
+    p_ch.add_argument("--weeks", type=int, required=True, help="Keep videos uploaded within the last N weeks")
+    p_ch.add_argument("-o", "--output", default=None, help="Write watch URLs here, one per line")
+    p_ch.add_argument("--cache", default=None,
+                      help="Cache directory (default: ~/Downloads/YoutubeSummaries/.cache/channels)")
+    p_ch.add_argument("--channels-json", default=None, help="Also write a structured per-channel JSON here")
+    p_ch.add_argument("--no-cache", action="store_true", help="Skip the cache: always fetch the full window")
+
+    # ── grade ──
+    p_gr = sub.add_parser("grade", help="Grade extracted ticker mentions into ranked leaderboards (deterministic)")
+    p_gr.add_argument("--extract-dir", required=True, help="Directory of extract_*.jsonl ticker rows")
+    p_gr.add_argument("--authors", required=True, help="authors.json with videos_per_author + total_authors")
+    p_gr.add_argument("-o", "--output", required=True, help="Write the graded leaderboard JSON here")
 
     sub.add_parser("check-update", help="Check for new versions and changes")
 
@@ -163,6 +177,10 @@ def main():
         _cmd_format(args)
     elif args.command == "transcribe":
         _cmd_transcribe(args)
+    elif args.command == "channels":
+        _cmd_channels(args)
+    elif args.command == "grade":
+        _cmd_grade(args)
 
 
 # ── Command handlers ────────────────────────────────
@@ -1127,6 +1145,104 @@ def _cmd_transcribe(args):
         print(f"✅ Transcript written to {args.output}")
     else:
         print(text)
+
+
+def _cmd_channels(args):
+    """List each tracked finance channel's recent uploads into a links file."""
+    from datetime import date, timedelta
+
+    from agent_reach.stockyt import cache as cache_mod
+    from agent_reach.stockyt import channels as channels_mod
+    from agent_reach.stockyt import config as stockyt_config
+
+    cache_dir = args.cache or cache_mod.DEFAULT_CACHE_DIR
+    cutoff = (date.today() - timedelta(weeks=args.weeks)).strftime("%Y%m%d")
+
+    all_urls = []
+    json_channels = []
+    total = 0
+    failed = 0
+    for name, channel_id in stockyt_config.CHANNELS:
+        existing = None if args.no_cache else cache_mod.load(channel_id, cache_dir)
+        try:
+            fresh = channels_mod.list_channel_videos(channel_id, weeks=args.weeks, cache=existing)
+            if not args.no_cache:
+                cache_mod.merge(channel_id, fresh, cache_dir)
+                window = cache_mod.all_in_window(channel_id, cutoff, cache_dir)
+            else:
+                window = sorted(fresh, key=lambda r: r["upload_date"], reverse=True)
+        except Exception as e:
+            # One channel's transient yt-dlp failure must not abort the sweep.
+            # Fall back to whatever is already cached for its window.
+            failed += 1
+            window = [] if args.no_cache else cache_mod.all_in_window(channel_id, cutoff, cache_dir)
+            print(f"  ⚠️ {name}: fetch failed — {e} (kept {len(window)} cached videos in window)")
+        else:
+            print(f"  {name}: {len(window)} videos, oldest {window[-1]['upload_date'] if window else '—'}")
+
+        total += len(window)
+        all_urls.extend(f"https://www.youtube.com/watch?v={r['video_id']}" for r in window)
+        json_channels.append({
+            "channel": name,
+            "channel_id": channel_id,
+            "count": len(window),
+            "oldest_date": window[-1]["upload_date"] if window else None,
+            "videos": window,
+        })
+
+    print(f"Total: {total} videos across {len(stockyt_config.CHANNELS)} channels"
+          + (f" ({failed} failed this run)" if failed else ""))
+    integrity = sum(c["count"] for c in json_channels)
+    print(f"Integrity: {len(all_urls)} URLs == {integrity} summed per-channel counts "
+          f"({'ok' if len(all_urls) == integrity else 'MISMATCH'})")
+
+    if args.output:
+        with open(args.output, "w", encoding="utf-8") as f:
+            f.write("\n".join(all_urls) + ("\n" if all_urls else ""))
+        print(f"✅ {len(all_urls)} URLs → {args.output}")
+
+    if args.channels_json:
+        with open(args.channels_json, "w", encoding="utf-8") as f:
+            json.dump(json_channels, f, ensure_ascii=False, indent=2)
+        print(f"✅ Structured channels → {args.channels_json}")
+
+
+def _cmd_grade(args):
+    """Grade extracted ticker rows into bullish/bearish leaderboards."""
+    import glob
+
+    from agent_reach.stockyt.grading import grade
+
+    extract_rows = []
+    for path in sorted(glob.glob(os.path.join(args.extract_dir, "extract_*.jsonl"))):
+        with open(path, encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    extract_rows.append(json.loads(line))
+                except json.JSONDecodeError:
+                    continue  # one malformed row must not abort the grade
+
+    with open(args.authors, encoding="utf-8") as f:
+        authors = json.load(f)
+
+    result = grade(extract_rows, authors["videos_per_author"], authors["total_authors"])
+
+    with open(args.output, "w", encoding="utf-8") as f:
+        json.dump(result, f, ensure_ascii=False, indent=2, default=str)
+
+    print(f"Graded {len(extract_rows)} rows → {len(result['tickers'])} tickers")
+    print("\n=== TOP 10 BULLISH ===")
+    for i, v in enumerate(result["bullish"][:10], 1):
+        flag = " CONTESTED" if v["contested"] else ""
+        print(f"{i:2}. {v['ticker']:6} {v['tier']} {v['score']:5} | {v['breadth']}/{result['total_authors']} auth{flag} | {v['company'][:30]}")
+    print("\n=== TOP 10 BEARISH ===")
+    for i, v in enumerate(result["bearish"][:10], 1):
+        flag = " CONTESTED" if v["contested"] else ""
+        print(f"{i:2}. {v['ticker']:6} {v['tier']} {v['score']:5} | {v['breadth']}/{result['total_authors']} auth{flag} | {v['company'][:30]}")
+    print(f"\n✅ Leaderboard → {args.output}")
 
 
 def _parse_twitter_cookie_input(value: str):

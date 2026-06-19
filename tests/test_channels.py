@@ -1209,3 +1209,112 @@ class TestXiaoyuzhouChannel:
         status, msg = ch.check()
         assert status == "ok"
         assert ch.active_backend == "groq-whisper"
+
+
+class TestYouTubeFetch:
+    def test_clean_vtt_dedupes_and_strips_tags(self):
+        from agent_reach.channels.youtube import _clean_vtt
+
+        vtt = (
+            "WEBVTT\n"
+            "Kind: captions\n"
+            "Language: en\n"
+            "\n"
+            "00:00:01.000 --> 00:00:03.000\n"
+            "<00:00:01.234><c>hello</c> there\n"
+            "\n"
+            "00:00:03.000 --> 00:00:05.000\n"
+            "hello there\n"
+            "\n"
+            "00:00:05.000 --> 00:00:07.000\n"
+            "world\n"
+        )
+        assert _clean_vtt(vtt) == "hello there world"
+
+    def test_fetch_transcript_prefers_manual_subs(self, monkeypatch):
+        from agent_reach.channels import youtube
+
+        calls = []
+
+        def fake_download(url, lang, tmpdir, auto):
+            calls.append(auto)
+            return "WEBVTT\n\n00:00 --> 00:01\nmanual line\n" if auto is False else None
+
+        monkeypatch.setattr(youtube, "_download_subtitles", fake_download)
+        text, source = youtube.YouTubeChannel().fetch_transcript("https://youtu.be/x")
+        assert source == "subtitles"
+        assert text == "manual line"
+        assert calls == [False]  # stops before trying auto
+
+    def test_fetch_transcript_falls_back_to_auto_subs(self, monkeypatch):
+        from agent_reach.channels import youtube
+
+        def fake_download(url, lang, tmpdir, auto):
+            return "WEBVTT\n\n00:00 --> 00:01\nauto line\n" if auto else None
+
+        monkeypatch.setattr(youtube, "_download_subtitles", fake_download)
+        text, source = youtube.YouTubeChannel().fetch_transcript("https://youtu.be/x")
+        assert source == "auto_subtitles"
+        assert text == "auto line"
+
+    def test_fetch_transcript_falls_back_to_whisper(self, monkeypatch):
+        from agent_reach.channels import youtube
+
+        monkeypatch.setattr(youtube, "_download_subtitles", lambda *a, **k: None)
+        ch = youtube.YouTubeChannel()
+        monkeypatch.setattr(ch, "transcribe", lambda url, **k: "whisper text")
+        text, source = ch.fetch_transcript("https://youtu.be/x")
+        assert source == "whisper"
+        assert text == "whisper text"
+
+    def test_fetch_transcript_no_whisper_returns_none(self, monkeypatch):
+        from agent_reach.channels import youtube
+
+        monkeypatch.setattr(youtube, "_download_subtitles", lambda *a, **k: None)
+        text, source = youtube.YouTubeChannel().fetch_transcript(
+            "https://youtu.be/x", allow_whisper=False
+        )
+        assert (text, source) == (None, None)
+
+    def test_fetch_transcript_swallows_whisper_errors(self, monkeypatch):
+        from agent_reach.channels import youtube
+        from agent_reach.transcribe import TranscribeError
+
+        monkeypatch.setattr(youtube, "_download_subtitles", lambda *a, **k: None)
+        ch = youtube.YouTubeChannel()
+
+        def boom(url, **k):
+            raise TranscribeError("no provider")
+
+        monkeypatch.setattr(ch, "transcribe", boom)
+        assert ch.fetch_transcript("https://youtu.be/x") == (None, None)
+
+    def test_fetch_metadata_parses_channel_and_id(self, monkeypatch):
+        from agent_reach.channels import youtube
+
+        class FakeProc:
+            returncode = 0
+            stdout = "Fallow\tUC_abc123\tFallow Uploader\n"
+
+        monkeypatch.setattr(youtube.subprocess, "run", lambda *a, **k: FakeProc())
+        assert youtube._fetch_metadata("https://youtu.be/x") == ("Fallow", "UC_abc123")
+
+    def test_fetch_metadata_falls_back_to_uploader(self, monkeypatch):
+        from agent_reach.channels import youtube
+
+        class FakeProc:
+            returncode = 0
+            stdout = "NA\tUC_abc123\tUploader Name\n"  # channel unset → "NA"
+
+        monkeypatch.setattr(youtube.subprocess, "run", lambda *a, **k: FakeProc())
+        assert youtube._fetch_metadata("https://youtu.be/x") == ("Uploader Name", "UC_abc123")
+
+    def test_fetch_metadata_returns_none_on_failure(self, monkeypatch):
+        from agent_reach.channels import youtube
+
+        class FakeProc:
+            returncode = 1
+            stdout = ""
+
+        monkeypatch.setattr(youtube.subprocess, "run", lambda *a, **k: FakeProc())
+        assert youtube._fetch_metadata("https://youtu.be/x") == (None, None)

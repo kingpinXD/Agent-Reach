@@ -1,7 +1,11 @@
 # -*- coding: utf-8 -*-
 """Tests for the deterministic ticker grader."""
 
-from agent_reach.stockyt.grading import grade
+import json
+from unittest.mock import patch
+
+from agent_reach.cli import main
+from agent_reach.stockyt.grading import grade, integrity, leaderboard_markdown
 
 VPA = {"AuthorA": 5, "AuthorB": 5, "AuthorC": 5}
 TOTAL = 3
@@ -77,3 +81,56 @@ def test_alias_and_missing_ticker():
     result = grade(rows, VPA, TOTAL)
     assert "GOOGL" in result["tickers"]
     assert "GOOG" not in result["tickers"]
+
+
+def test_leaderboard_markdown_has_both_boards():
+    result = grade(_build_rows(), VPA, TOTAL)
+    md = leaderboard_markdown(result)
+    assert "## Bullish" in md and "## Bearish" in md
+    assert "| Rank | Ticker | Company | Tier | Score | Breadth | Contested | Thesis |" in md
+    assert "⚔️" in md  # FIGHT is contested
+
+
+def test_integrity_skipped_without_chunks(tmp_path):
+    assert integrity(str(tmp_path), 5) is None
+
+
+def test_integrity_reconciles_chunks_and_extracts(tmp_path):
+    (tmp_path / "chunk_01.jsonl").write_text(
+        "\n".join(json.dumps({"video_id": v}) for v in ["v1", "v2", "v3"]) + "\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "extract_01.jsonl").write_text(
+        json.dumps({"video_id": "v1", "ticker": "AAPL"}) + "\n", encoding="utf-8"
+    )
+    integ = integrity(str(tmp_path), 3)
+    assert integ == {"n": 3, "covered": 3, "with_tickers": 1, "missing": 0, "ok": True}
+
+    # N greater than covered → missing flagged.
+    integ = integrity(str(tmp_path), 5)
+    assert integ["missing"] == 2 and integ["ok"] is False
+
+
+def test_grade_cli_writes_json_md_and_integrity(tmp_path):
+    rows = [_strong("AuthorA", "CONS", "v1", "bullish"), _strong("AuthorB", "CONS", "v2", "bullish")]
+    (tmp_path / "extract_01.jsonl").write_text(
+        "\n".join(json.dumps(r) for r in rows) + "\n", encoding="utf-8"
+    )
+    (tmp_path / "chunk_01.jsonl").write_text(
+        "\n".join(json.dumps({"video_id": v}) for v in ["v1", "v2"]) + "\n", encoding="utf-8"
+    )
+    (tmp_path / "authors.json").write_text(
+        json.dumps({"videos_per_author": {"AuthorA": 1, "AuthorB": 1}, "total_authors": 2, "N": 2}),
+        encoding="utf-8",
+    )
+
+    out = tmp_path / "graded.json"
+    argv = ["agent-reach", "grade", "--extract-dir", str(tmp_path),
+            "--authors", str(tmp_path / "authors.json"), "-o", str(out)]
+    with patch("sys.argv", argv):
+        main()
+
+    assert out.exists() and (tmp_path / "graded.md").exists()
+    result = json.loads(out.read_text(encoding="utf-8"))
+    assert result["integrity"] == {"n": 2, "covered": 2, "with_tickers": 2, "missing": 0, "ok": True}
+    assert "## Bullish" in (tmp_path / "graded.md").read_text(encoding="utf-8")

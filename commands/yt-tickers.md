@@ -21,20 +21,13 @@ RUN DIR:      /tmp/ticker-run-<timestamp>/                     (chunks + per-age
 TOP:          25        (--top: how many rows to show per leaderboard)
 ```
 
-## Step 1: Load corpus + per-author baseline
+## Step 1: Split the corpus (app — `agent-reach split-corpus`)
 
-Read INPUT (JSONL from `/yt-transcripts`). Keep only `status == "ok"` records with a non-empty transcript. Let `N` = that count.
-
-Compute and stash for grading (Python step, write to run dir as `authors.json`):
-- `total_authors` = number of distinct `channel` values
-- `videos_per_author[channel]` = how many corpus videos each channel has  ← **the normalization denominator** (Stock Moe has ~146, others far fewer; raw counts would drown them out)
-
-Tell the user `N`, `total_authors`, and the concurrency.
-
-## Step 2: Split into chunks
-
-- `A = min(CONCURRENCY, N)`; chunk size = `ceil(N / A)`.
-- Pre-split the JSONL into `chunk_01.jsonl … chunk_<A>.jsonl` in the run dir (each holds that chunk's FULL records). Pre-splitting means each agent reads a small file, not the 6 MB corpus.
+Don't hand-roll this — the app does it (tested). Pick a fresh `RUN_DIR=/tmp/ticker-run-<timestamp>`, then:
+```bash
+agent-reach split-corpus --input <INPUT.jsonl> --out-dir <RUN_DIR> --chunks <CONCURRENCY>
+```
+It keeps `status=="ok"` records with a non-empty transcript, writes `<RUN_DIR>/authors.json` (`total_authors`, `videos_per_author` — the normalization denominator — and `N`), and splits into `chunk_01.jsonl … chunk_<A>.jsonl` (`A = min(--chunks, N)`, full records per chunk). Surface its printed `N` / authors / chunk count to the user.
 
 ## Step 3: Fan out the extraction team (single concurrent wave)
 
@@ -49,13 +42,13 @@ Spawn **all `A` subagents in ONE message** (`subagent_type: general-purpose`). E
 
 Gather each agent's JSON. A chunk is **dead** if the agent crashed/returned null/reported an `agent_error`, or `extract_NN.jsonl` is missing, or `videos_done < videos_attempted`. Re-spawn each dead chunk **once**; if it still fails, record its video_ids as **unprocessed** and continue — never block on one chunk.
 
-## Step 5: Grade (deterministic — call the app, don't re-implement)
+## Step 5: Grade + integrity + markdown (app — `agent-reach grade`)
 
-The grading logic lives in the app (`agent_reach/stockyt/grading.py`, tested). Run:
+The app does grading, the integrity check, AND the markdown render — one call, no ad-hoc scripts:
 ```bash
 agent-reach grade --extract-dir <RUN_DIR> --authors <RUN_DIR>/authors.json -o ~/Downloads/YoutubeSummaries/tickers-<timestamp>.json
 ```
-It loads all `extract_*.jsonl` + `authors.json`, applies the formula below, and writes the graded JSON (two leaderboards). Do NOT hand-write the grading in an inline script — the formula is documented here only so the ranking is auditable:
+It loads every `extract_*.jsonl` + `authors.json`, applies the formula below, and writes **three things**: the graded `.json`, a sibling `.md` leaderboard (same path, `.md` extension), and a printed+embedded **Integrity** line (`corpus N / covered / with_tickers / missing [OK|FAIL]`) reconciled against the `chunk_*.jsonl` it finds in `RUN_DIR`. Do NOT re-implement grading, integrity, or the markdown in an inline script — the formula is documented here only so the ranking is auditable:
 
 **Per mention** (one extract row), first compute a **context score** `ctx ∈ 0–1` — this is what makes substance beat repetition:
 - start at 0; `+0.45` if `thesis` is non-null and substantive, `+0.20` if `catalyst` non-null, `+0.15` if `price_target` non-null, `+0.10` if `is_primary_topic`, `+0.10` if `time_horizon != "unspecified"`. Clamp to 1.0.
@@ -82,19 +75,13 @@ Per-ticker output fields: `ticker, company, asset_type, tier, score, breadth("X/
 
 > The weights (0.5/0.5/0.25, the breadth multiplier, tier cutoffs) are intentionally explicit and tunable — keep them in one place at the top of the grading script so they're easy to adjust.
 
-## Step 6: Verify (integrity — mandatory)
+## Step 6: Verify (the app already did the integrity math)
 
-Reconcile against Step 1's corpus:
-- `processed` = videos that appear in some `extract_*.jsonl` OR were reported in a chunk's `videos_with_no_ticker`
-- `skipped` = videos reported skipped (with reasons)
-- `unprocessed` = videos from dead chunks
-- **Assert** `processed + skipped + unprocessed == N`, and that every corpus video_id is in exactly one bucket. If it fails, say so loudly and list the gap — do not present a clean leaderboard over a lossy extraction. Note: a video legitimately producing zero tickers (macro/no specific ticker) is `processed`, NOT skipped.
+`agent-reach grade` printed and embedded the Integrity line. Confirm it reads `OK` (`missing=0`). If it reports `FAIL`/`missing>0`, say so loudly — some videos from dead chunks never produced extracts; re-run those chunks (Step 4) before presenting. A video that legitimately produced zero tickers (macro/no specific ticker) is still `covered`, not missing. Do not present a clean leaderboard over a `FAIL`.
 
-## Step 7: Write + present
+## Step 7: Present
 
-`tickers-<timestamp>.json` is already written by `agent-reach grade` (Step 5). From that JSON, format `tickers-<timestamp>.md` in OUTPUT DIR (the two leaderboards as tables). Do not recompute scores — read them from the JSON.
-
-Present to the user:
+The `.json` and `.md` are already written by Step 5. Read the `.json` and present to the user:
 - **Bullish top `TOP`** and **Bearish top `TOP`** as compact tables: `rank | ticker | company | tier | score | breadth(X/total) | context | one-line thesis`
 - For the top few of each board, show the **strongest thesis + catalyst** (with the channel) so the ranking is justified by context, not just a number.
 - A short **Contested** callout (authors disagree) — these are the interesting ones; show both the bull and bear thesis.

@@ -147,6 +147,13 @@ def main():
     p_gr.add_argument("--authors", required=True, help="authors.json with videos_per_author + total_authors")
     p_gr.add_argument("-o", "--output", required=True, help="Write the graded leaderboard JSON here")
 
+    # ── split-corpus ──
+    p_sc = sub.add_parser("split-corpus",
+                          help="Split a transcripts JSONL into authors.json + chunk_*.jsonl (deterministic)")
+    p_sc.add_argument("--input", required=True, help="transcripts.jsonl from the youtube command")
+    p_sc.add_argument("--out-dir", required=True, help="Directory for authors.json + chunk_*.jsonl")
+    p_sc.add_argument("--chunks", type=int, default=30, help="Max contiguous chunks (default: 30)")
+
     sub.add_parser("check-update", help="Check for new versions and changes")
 
     # ── watch ──
@@ -194,6 +201,8 @@ def main():
         _cmd_channels(args)
     elif args.command == "grade":
         _cmd_grade(args)
+    elif args.command == "split-corpus":
+        _cmd_split_corpus(args)
 
 
 # ── Command handlers ────────────────────────────────
@@ -1224,7 +1233,7 @@ def _cmd_grade(args):
     """Grade extracted ticker rows into bullish/bearish leaderboards."""
     import glob
 
-    from agent_reach.stockyt.grading import grade
+    from agent_reach.stockyt.grading import grade, integrity, leaderboard_markdown
 
     extract_rows = []
     for path in sorted(glob.glob(os.path.join(args.extract_dir, "extract_*.jsonl"))):
@@ -1243,8 +1252,16 @@ def _cmd_grade(args):
 
     result = grade(extract_rows, authors["videos_per_author"], authors["total_authors"])
 
+    integ = integrity(args.extract_dir, authors.get("N", 0))
+    if integ is not None:
+        result["integrity"] = integ
+
     with open(args.output, "w", encoding="utf-8") as f:
         json.dump(result, f, ensure_ascii=False, indent=2, default=str)
+
+    md_path = os.path.splitext(args.output)[0] + ".md"
+    with open(md_path, "w", encoding="utf-8") as f:
+        f.write(leaderboard_markdown(result))
 
     print(f"Graded {len(extract_rows)} rows → {len(result['tickers'])} tickers")
     print("\n=== TOP 10 BULLISH ===")
@@ -1255,7 +1272,40 @@ def _cmd_grade(args):
     for i, v in enumerate(result["bearish"][:10], 1):
         flag = " CONTESTED" if v["contested"] else ""
         print(f"{i:2}. {v['ticker']:6} {v['tier']} {v['score']:5} | {v['breadth']}/{result['total_authors']} auth{flag} | {v['company'][:30]}")
-    print(f"\n✅ Leaderboard → {args.output}")
+
+    if integ is None:
+        print("\nIntegrity: chunk files not found in --extract-dir, skipped")
+    else:
+        status = "OK" if integ["ok"] else f"FAIL missing={integ['missing']}"
+        print(f"\nIntegrity: corpus N={integ['n']} covered={integ['covered']} "
+              f"with_tickers={integ['with_tickers']} missing={integ['missing']} [{status}]")
+    print(f"\n✅ Leaderboard → {args.output} (+ {md_path})")
+
+
+def _cmd_split_corpus(args):
+    """Split a transcripts JSONL into authors.json + contiguous chunk files."""
+    from agent_reach.stockyt.corpus import split_corpus
+
+    records = []
+    with open(args.input, encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                records.append(json.loads(line))
+            except json.JSONDecodeError:
+                continue  # one malformed row must not abort the split
+
+    authors, num_chunks = split_corpus(records, args.out_dir, chunks=args.chunks)
+
+    n = authors["N"]
+    print(f"Kept {n} ok records → {args.out_dir}")
+    print(f"Authors: {authors['total_authors']}")
+    for channel, count in sorted(authors["videos_per_author"].items(), key=lambda kv: -kv[1]):
+        print(f"  {channel}: {count}")
+    chunk_size = -(-n // num_chunks) if num_chunks else 0  # ceil, for display
+    print(f"Wrote {num_chunks} chunks (~{chunk_size} records each) + authors.json")
 
 
 def _extract_video_id(url: str):

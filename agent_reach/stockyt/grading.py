@@ -9,6 +9,9 @@ module constants.
 
 from __future__ import annotations
 
+import glob
+import json
+import os
 from collections import Counter, defaultdict
 
 # ── weights (tunable) ──
@@ -170,4 +173,91 @@ def grade(extract_rows: list[dict], videos_per_author: dict, total_authors: int)
         "bullish": _board(all_summaries, "bull_score"),
         "bearish": _board(all_summaries, "bear_score"),
         "tickers": summaries,
+    }
+
+
+def _thesis_cell(entry, width: int = 70) -> str:
+    """First top_theses entry's text, truncated, with '|' neutralized for tables."""
+    if not entry:
+        return ""
+    text = str(entry[1] if isinstance(entry, (list, tuple)) else entry).strip()
+    text = text.replace("|", "/")
+    return text[: width - 1] + "…" if len(text) > width else text
+
+
+def _md_table(rows: list[dict], total_authors: int, limit: int = 25) -> str:
+    header = (
+        "| Rank | Ticker | Company | Tier | Score | Breadth | Contested | Thesis |\n"
+        "|---|---|---|---|---|---|---|---|"
+    )
+    lines = [header]
+    for rank, v in enumerate(rows[:limit], 1):
+        thesis = _thesis_cell((v.get("top_theses") or [None])[0])
+        contested = "⚔️" if v.get("contested") else ""
+        lines.append(
+            f"| {rank} | {v['ticker']} | {str(v.get('company') or '').replace('|', '/')} "
+            f"| {v['tier']} | {v['score']} | {v['breadth']}/{total_authors} | {contested} | {thesis} |"
+        )
+    return "\n".join(lines)
+
+
+def leaderboard_markdown(result: dict) -> str:
+    """Render the graded result as a Markdown leaderboard (top 25 each board)."""
+    total_authors = result["total_authors"]
+    total_tickers = len(result["tickers"])
+    parts = [
+        f"# Ticker Leaderboard ({total_tickers} tickers · {total_authors} authors)",
+        "",
+        "## Bullish",
+        "",
+        _md_table(result["bullish"], total_authors),
+        "",
+        "## Bearish",
+        "",
+        _md_table(result["bearish"], total_authors),
+        "",
+    ]
+    return "\n".join(parts)
+
+
+def _union_video_ids(paths: list[str]) -> set[str]:
+    """Union of video_ids across a set of JSONL files (malformed lines skipped)."""
+    ids: set[str] = set()
+    for path in paths:
+        with open(path, encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    row = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                vid = row.get("video_id")
+                if vid:
+                    ids.add(vid)
+    return ids
+
+
+def integrity(extract_dir: str, n: int) -> dict | None:
+    """Reconcile corpus chunks vs extracts in extract_dir.
+
+    Returns None (skip) when no chunk_*.jsonl files are present. Otherwise:
+    covered = union of video_ids across chunk_*.jsonl, with_tickers = union
+    across extract_*.jsonl, missing = N - len(covered) (corpus videos that
+    never made it into any chunk). ok when missing == 0.
+    """
+    chunk_paths = sorted(glob.glob(os.path.join(extract_dir, "chunk_*.jsonl")))
+    if not chunk_paths:
+        return None
+    extract_paths = sorted(glob.glob(os.path.join(extract_dir, "extract_*.jsonl")))
+    covered = _union_video_ids(chunk_paths)
+    with_tickers = _union_video_ids(extract_paths)
+    missing = max(n - len(covered), 0)
+    return {
+        "n": n,
+        "covered": len(covered),
+        "with_tickers": len(with_tickers),
+        "missing": missing,
+        "ok": missing == 0,
     }

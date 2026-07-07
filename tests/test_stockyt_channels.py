@@ -32,10 +32,44 @@ def test_window_filter_and_bad_line_tolerance():
 
 
 def test_early_stop_on_cache_hit():
-    cache = {"vid_cached": {"video_id": "vid_cached"}}
-    rows = list_channel_videos(CID, weeks=2, today=TODAY, cache=cache, _lines=iter(LINES))
-    # stops the moment it reaches the cached id — older lines never collected
+    # Fast path: cache floor (20260101) is OLDER than the cutoff (20260605), so the
+    # cache already reaches back past the window — the cached-id stop is safe.
+    cache = {
+        "vid_cached": {"video_id": "vid_cached", "upload_date": "20260607"},
+        "vid_floor": {"video_id": "vid_floor", "upload_date": "20260101"},
+    }
+    lines = [
+        "vid_new\t20260618\tFresh",
+        "vid_mid\t20260610\tIn window",
+        "vid_cached\t20260607\tCached hit → stop",
+        "vid_extra\t20260606\tStill in window but never reached",  # not over-fetched
+    ]
+    rows = list_channel_videos(CID, weeks=2, today=TODAY, cache=cache, _lines=iter(lines))
+    # stops the moment it reaches the cached id — the in-window extra is not collected
     assert [r["video_id"] for r in rows] == ["vid_new", "vid_mid"]
+
+
+def test_grown_window_backfills_past_cached_ids():
+    # Cache was seeded from a ~1-week window (floor 20260615), now a 3-week window is
+    # requested (cutoff 20260529). cache_floor is NEWER than the cutoff, so the
+    # cached-id stop must be suppressed and the older in-window videos backfilled.
+    cache = {
+        "r1": {"video_id": "r1", "upload_date": "20260618"},
+        "r2": {"video_id": "r2", "upload_date": "20260615"},
+    }
+    lines = [
+        "r1\t20260618\tCached recent",
+        "r2\t20260615\tCached recent",
+        "older1\t20260603\tOlder but still in 3w window",
+        "older2\t20260530\tOlder but still in 3w window",
+        "past\t20260520\tPast the cutoff → stop",
+    ]
+    rows = list_channel_videos(CID, weeks=3, today=TODAY, cache=cache, _lines=iter(lines))
+    ids = [r["video_id"] for r in rows]
+    # did NOT stop at the first cached id — backfilled the older in-window videos
+    assert "older1" in ids and "older2" in ids
+    # stopped at the cutoff — the past-cutoff video was excluded
+    assert "past" not in ids
 
 
 def test_early_stop_on_cutoff():
@@ -52,14 +86,18 @@ def test_channels_sweep_survives_one_failure(tmp_path, monkeypatch, capsys):
     good_id, bad_id = "UCgood", "UCbad"
     monkeypatch.setattr(stockyt_config, "CHANNELS", [("Good", good_id), ("Bad", bad_id)])
 
+    # Dates are relative to the real today (the CLI derives the window cutoff from
+    # date.today()), so the fixtures stay in-window whenever the suite runs.
+    recent = date.today().strftime("%Y%m%d")
+
     # Pre-seed the failing channel's cache so it has a fallback window.
-    cached = {"video_id": "cachedvid", "upload_date": "20260618", "title": "old", "channel_id": bad_id}
+    cached = {"video_id": "cachedvid", "upload_date": recent, "title": "old", "channel_id": bad_id}
     cache_mod.merge(bad_id, [cached], str(tmp_path))
 
     def fake_list(channel_id, *, weeks, cache=None, today=None):
         if channel_id == bad_id:
             raise RuntimeError("yt-dlp boom")
-        return [{"video_id": "freshvid", "upload_date": "20260618", "title": "new", "channel_id": good_id}]
+        return [{"video_id": "freshvid", "upload_date": recent, "title": "new", "channel_id": good_id}]
 
     monkeypatch.setattr(channels_mod, "list_channel_videos", fake_list)
 

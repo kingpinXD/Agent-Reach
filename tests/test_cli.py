@@ -19,7 +19,7 @@ class TestCLI:
                 main()
         assert exc_info.value.code == 0
         captured = capsys.readouterr()
-        assert "Agent Reach v1.7.1" in captured.out
+        assert "Agent Reach v1.7.2" in captured.out
 
     def test_no_command_shows_help(self, capsys):
         with pytest.raises(SystemExit) as exc_info:

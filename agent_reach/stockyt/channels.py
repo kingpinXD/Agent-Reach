@@ -102,10 +102,12 @@ def list_channel_videos(
 
     Returns rows {video_id, upload_date (YYYYMMDD), title, channel_id}.
 
-    EARLY STOP: yt-dlp prints newest-first, so we stop reading the moment we hit
-    either (a) a video whose upload_date < cutoff, or (b) a video_id already in
-    `cache`. Everything beyond that point is older and already known/out-of-window,
-    so there is nothing left to gain by reading on.
+    EARLY STOP: yt-dlp prints newest-first, so we always stop reading once we hit
+    a video whose upload_date < cutoff — everything beyond is out-of-window. As an
+    optimization we also stop on a video_id already in `cache`, but ONLY when the
+    cache is known to already reach back to the cutoff (its oldest cached upload_date
+    <= cutoff). Otherwise a grown window (cache seeded from a smaller window) would
+    stop at the first cached id and never back-fill the older in-window videos.
 
     Bad lines (missing/`NA` date) are skipped, never fatal. `today` is injectable
     for tests; `_lines` overrides the yt-dlp call for tests.
@@ -116,6 +118,14 @@ def list_channel_videos(
 
     lines = _lines if _lines is not None else _run_ytdlp_lines(channel_id)
 
+    # Oldest upload_date the cache already covers. The cached-id early-stop is only
+    # safe once the cache reaches the cutoff (cache_floor <= cutoff_str); a newer
+    # floor means the requested window grew and older videos still need back-filling.
+    cache_floor = (
+        min(row["upload_date"] for row in cache.values()) if cache else None
+    )
+    cache_reaches_cutoff = cache_floor is not None and cache_floor <= cutoff_str
+
     rows: list[dict] = []
     parsed_any = False
     for line in lines:
@@ -125,7 +135,7 @@ def list_channel_videos(
         parsed_any = True
         if row["upload_date"] < cutoff_str:
             break
-        if cache is not None and row["video_id"] in cache:
+        if cache_reaches_cutoff and row["video_id"] in cache:
             break
         rows.append(row)
 

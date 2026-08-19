@@ -1,7 +1,7 @@
 ---
-description: "Batch-fetch YouTube transcripts from a file of links (or pasted URLs) into JSONL, in parallel via a team of subagents, then compile + verify + summarize. Auto-triggers when user says 'yt transcripts', 'youtube transcripts', 'fetch transcripts', 'get transcripts for these videos', 'transcripts from this file', or similar, followed by a links file or YouTube URLs."
+name: yt-transcripts
+description: Batch-fetch YouTube transcripts from a file of links (or pasted URLs) into JSONL, in parallel via a team of subagents, then compile + verify + summarize. Auto-triggers when user says 'yt transcripts', 'youtube transcripts', 'fetch transcripts', 'get transcripts for these videos', 'transcripts from this file', or similar, followed by a links file or YouTube URLs. Arguments: Path to a file of YouTube links (one per line), OR one/more pasted YouTube URLs. Optional: '-o <path>' output JSONL, '--whisper' to enable the Whisper fallback (default off), '--lang <code>' subtitle language, '--concurrency <n>' agent count (default 30). If omitted, ask for the links.
 allowed-tools: Bash, Read, Write, Grep, Glob, Agent, Task
-argument-description: "Path to a file of YouTube links (one per line), OR one/more pasted YouTube URLs. Optional: '-o <path>' output JSONL, '--whisper' to enable the Whisper fallback (default off), '--lang <code>' subtitle language, '--concurrency <n>' agent count (default 30). If omitted, ask for the links."
 ---
 
 # YouTube Transcripts (parallel): $ARGUMENTS

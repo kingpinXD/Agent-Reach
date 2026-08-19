@@ -1,7 +1,7 @@
 ---
-description: "Extract stock/crypto tickers from a corpus of YouTube transcripts (JSONL) in parallel via a team of subagents, then grade them into ranked Bullish/Bearish leaderboards using cross-author consensus. Auto-triggers when user says 'ticker extract', 'extract tickers', 'grade tickers', 'which stocks are they talking about', 'ticker leaderboard', or similar, pointed at a transcripts file."
+name: yt-tickers
+description: Extract stock/crypto tickers from a corpus of YouTube transcripts (JSONL) in parallel via a team of subagents, then grade them into ranked Bullish/Bearish leaderboards using cross-author consensus. Auto-triggers when user says 'ticker extract', 'extract tickers', 'grade tickers', 'which stocks are they talking about', 'ticker leaderboard', or similar, pointed at a transcripts file. Arguments: Path to a transcripts JSONL (default ~/Downloads/YoutubeSummaries/transcripts.jsonl). Optional: '--concurrency <n>' (default 30), '-o <dir>' output dir, '--top <n>' leaderboard size.
 allowed-tools: Bash, Read, Write, Grep, Glob, Agent, Task
-argument-description: "Path to a transcripts JSONL (default ~/Downloads/YoutubeSummaries/transcripts.jsonl). Optional: '--concurrency <n>' (default 30), '-o <dir>' output dir, '--top <n>' leaderboard size."
 ---
 
 # Ticker Extract & Grade: $ARGUMENTS

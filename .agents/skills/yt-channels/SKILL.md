@@ -1,7 +1,7 @@
 ---
-description: "Fetch all videos posted in the last N WEEKS from the fixed set of finance YouTube channels, into a links file (cached, incremental). Auto-triggers when user says 'yt channels', 'fetch channel videos', 'download stock yt', 'last N weeks of videos', 'recent videos from the channels', or similar, with a number of weeks."
+name: yt-channels
+description: Fetch all videos posted in the last N WEEKS from the fixed set of finance YouTube channels, into a links file (cached, incremental). Auto-triggers when user says 'yt channels', 'fetch channel videos', 'download stock yt', 'last N weeks of videos', 'recent videos from the channels', or similar, with a number of weeks. Arguments: A number = how many WEEKS back from today to fetch (e.g. '4'). Optional: '-o <path>' links file, '--no-cache'. If omitted, ask how many weeks.
 allowed-tools: Bash, Read, Write, Grep, Glob
-argument-description: "A number = how many WEEKS back from today to fetch (e.g. '4'). Optional: '-o <path>' links file, '--no-cache'. If omitted, ask how many weeks."
 ---
 
 # YouTube Channel Videos (last N weeks): $ARGUMENTS

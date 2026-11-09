@@ -10,14 +10,14 @@ You are the **orchestrator**. Split the link list across a team of subagents tha
 
 Each link's record (transcript-only, keyed by url+video_id):
 ```json
-{"url":"…","video_id":"…","channel":"…","channel_id":"…","transcript":"…","source":"subtitles|auto_subtitles|whisper","status":"ok"}
+{"url":"…","video_id":"…","channel":"…","channel_id":"…","transcript":"…","source":"subtitles|whisper","status":"ok"}
 {"url":"…","video_id":"…","channel":null,"channel_id":null,"transcript":null,"source":null,"status":"error","error":"no transcript available"}
 ```
 
 ## Config
 ```
 CONCURRENCY:   30          # target number of parallel subagents (override with --concurrency)
-WHISPER:       off         # default subtitles/auto-subs only; --whisper enables fallback (needs ffmpeg + Groq key)
+WHISPER:       off         # default captions only (manual or auto); --whisper enables fallback (needs ffmpeg + Groq key)
 LANG:          en          # --lang to change
 OUTPUT DIR:    ~/Downloads/YoutubeSummaries/        # final compiled JSONL
 RUN DIR:       /tmp/yt-run-<timestamp>/             # canonical link list + per-agent batch files (intermediate)

@@ -1,231 +1,241 @@
 # -*- coding: utf-8 -*-
-"""YouTube — check if yt-dlp is available with JS runtime."""
+"""YouTube — video info, search, subtitles (yt-dlp) and Whisper transcription."""
 
+import html
+import json
+import os
 import re
 import shutil
-import subprocess
-import tempfile
-from pathlib import Path
+import sys
 
-from agent_reach.probe import probe_command
-from agent_reach.utils.paths import get_ytdlp_config_path, render_ytdlp_fix_command
-from agent_reach.utils.process import utf8_subprocess_env
-from agent_reach.utils.text import read_utf8_text
+from agent_reach.runtime.result import (
+    BAD_INPUT,
+    NOT_FOUND,
+    PLATFORM_BLOCKED,
+    RATE_LIMITED,
+    ReachError,
+    make_item,
+)
+from agent_reach.runtime.run import CommandFailed, run_cmd
+from agent_reach.utils.paths import private_temporary_directory
 
-from .base import Channel
+from .base import Action, Channel, Param
 
-# Inline cue-timestamp (<00:00:01.234>) and <c>...</c> styling yt-dlp emits in auto-subs.
-_VTT_INLINE_TAG = re.compile(r"<[^>]+>")
+_VIDEO_ID_RE = re.compile(r"^[A-Za-z0-9_-]{11}$")
+_VTT_TIME_RE = re.compile(
+    r"^(?:\d{2,}:)?\d{2}:\d{2}\.\d{3}[ \t]+-->[ \t]+"
+    r"(?:\d{2,}:)?\d{2}:\d{2}\.\d{3}(?:[ \t]|$)"
+)
+_TAG_RE = re.compile(r"<[^>]+>")
+_RAW_KEYS = ("id", "duration", "view_count", "like_count", "channel_id", "tags", "categories")
 
 
-def _has_js_runtime_config(config_path) -> bool:
-    """Return whether yt-dlp config explicitly enables a JS runtime."""
+def ytdlp_tls_args() -> list:
+    """yt-dlp trusts its bundled certifi and ignores SSL_CERT_FILE; behind a TLS-inspecting
+    proxy (corporate, school) every request then fails CERTIFICATE_VERIFY_FAILED."""
+    if os.environ.get("SSL_CERT_FILE") or os.environ.get("SSL_CERT_DIR"):
+        return ["--compat-options", "no-certifi"]
+    return []
+
+
+def _ytdlp_argv(*args: str) -> list:
+    """Run the yt-dlp installed with Agent Reach (one of its dependencies)."""
+    runtime = []
+    if shutil.which("deno") is None and shutil.which("node"):
+        runtime = ["--js-runtimes", "node"]
+    return [sys.executable, "-m", "yt_dlp", "--no-warnings", *ytdlp_tls_args(), *runtime, *args]
+
+
+def _video_url(target: str) -> str:
+    from agent_reach.utils.url import host_matches
+
+    t = str(target).strip()
+    if _VIDEO_ID_RE.match(t):
+        return f"https://www.youtube.com/watch?v={t}"
+    candidate = t if "://" in t else f"https://{t}"
+    if host_matches(candidate, "youtube.com", "youtu.be"):
+        return candidate
+    raise ReachError(BAD_INPUT, "target must be a YouTube link or 11-character video id")
+
+
+def _run_ytdlp(args: list, timeout: float, cwd=None) -> str:
     try:
-        if not config_path.exists():
-            return False
-        return "--js-runtimes" in read_utf8_text(config_path)
-    except OSError:
-        return False
+        return run_cmd(_ytdlp_argv(*args), timeout=timeout, cwd=cwd, label="yt-dlp")
+    except CommandFailed as exc:
+        err = exc.stderr.lower()
+        if any(s in err for s in ("video unavailable", "private video", "has been removed", "does not exist")):
+            raise ReachError(NOT_FOUND, exc.message) from None
+        if "sign in to confirm" in err or "not a bot" in err:
+            raise ReachError(
+                PLATFORM_BLOCKED,
+                exc.message,
+                hint="YouTube returned a verification challenge. Stop this request; this does not establish that the public video requires login.",
+            ) from None
+        if "429" in err or "too many requests" in err:
+            raise ReachError(RATE_LIMITED, exc.message) from None
+        raise
 
 
-def _clean_vtt(vtt_text: str) -> str:
-    """Reduce raw VTT to a single space-separated paragraph of spoken text.
+def _iso_date(yyyymmdd) -> str:
+    s = str(yyyymmdd or "")
+    return f"{s[:4]}-{s[4:6]}-{s[6:8]}" if len(s) == 8 and s.isdigit() else ""
 
-    Strips the WEBVTT header, metadata lines, cue-timing lines, inline timing
-    and styling tags, then collapses the consecutive duplicate lines that
-    YouTube auto-captions emit (each cue repeats the previous line as it scrolls).
-    """
-    lines = []
-    for raw in vtt_text.splitlines():
-        line = _VTT_INLINE_TAG.sub("", raw).strip()
-        if not line or "-->" in line:
+
+def vtt_to_text(vtt: str) -> str:
+    """Plain text from WebVTT: drop headers, timings, tags; collapse auto-caption repeats."""
+    out: list[str] = []
+    in_cue = False
+    block_start = True
+    metadata = False
+    for line in vtt.splitlines():
+        s = line.strip()
+        if not s:
+            in_cue, block_start, metadata = False, True, False
             continue
-        if line == "WEBVTT" or line.startswith(("Kind:", "Language:")):
+        if block_start:
+            block_start = False
+            metadata = s in {"NOTE", "STYLE", "REGION"} or s.startswith(("NOTE ", "NOTE\t"))
+        if metadata:
             continue
-        if lines and lines[-1] == line:
+        if _VTT_TIME_RE.match(s):
+            in_cue = True
             continue
-        lines.append(line)
-    return " ".join(lines)
-
-
-def _download_subtitles(url: str, lang: str, tmpdir: str, auto: bool) -> str | None:
-    """Fetch one subtitle track via yt-dlp; return raw VTT text or None.
-
-    Never raises on a yt-dlp failure — a missing track or a dead link returns
-    None so the caller can fall through to the next source.
-    """
-    sub_flag = "--write-auto-sub" if auto else "--write-sub"
-    cmd = [
-        "yt-dlp",
-        "--skip-download",
-        sub_flag,
-        "--sub-format",
-        "vtt",
-        "--sub-lang",
-        lang,
-        "-o",
-        str(Path(tmpdir) / "%(id)s"),
-        url,
-    ]
-    try:
-        proc = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            timeout=120,
-            env=utf8_subprocess_env(),
-        )
-    except (subprocess.TimeoutExpired, OSError):
-        return None
-    if proc.returncode != 0:
-        return None
-
-    files = sorted(Path(tmpdir).glob(f"*.{lang}.vtt"))
-    if not files:
-        return None
-    return read_utf8_text(files[0]) or None
-
-
-def _fetch_metadata(url: str) -> tuple[str | None, str | None]:
-    """Return (channel_name, channel_id) via one lightweight yt-dlp print call.
-
-    No media or subtitle download. Falls back to the uploader name when the
-    channel field is empty. Never raises — any failure yields (None, None) so a
-    missing channel can't change a link's transcript status.
-    """
-    cmd = [
-        "yt-dlp",
-        "--skip-download",
-        "--no-warnings",
-        "--print",
-        "%(channel)s\t%(channel_id)s\t%(uploader)s",
-        url,
-    ]
-    try:
-        proc = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            timeout=60,
-            env=utf8_subprocess_env(),
-        )
-    except (subprocess.TimeoutExpired, OSError):
-        return None, None
-    if proc.returncode != 0:
-        return None, None
-
-    parts = proc.stdout.strip().split("\t")
-    if len(parts) < 3:
-        return None, None
-
-    def _clean(value: str) -> str | None:
-        # yt-dlp prints the literal "NA" for unset template fields.
-        value = value.strip()
-        return value or None if value != "NA" else None
-
-    channel, channel_id, uploader = (_clean(p) for p in parts[:3])
-    return (channel or uploader), channel_id
+        if not in_cue:
+            # Headers and optional cue identifiers precede the timing line.
+            continue
+        s = html.unescape(_TAG_RE.sub("", s)).strip()
+        if s and (not out or out[-1] != s):
+            out.append(s)
+    return "\n".join(out)
 
 
 class YouTubeChannel(Channel):
     name = "youtube"
     description = "YouTube 视频和字幕"
-    backends = ["yt-dlp"]
-    tier = 0
+
+    level = "default"
+    #: transcribe re-encodes and chunks audio
+    prereqs = ("ffmpeg",)
+    actions = (
+        Action(
+            "read",
+            "Video title, channel, date and description",
+            (Param("target", "video link or id"),),
+            (("yt-dlp", "_ytdlp_read"),),
+            live_test={"target": "https://www.youtube.com/watch?v=jNQXAC9IVRw"},
+        ),
+        Action(
+            "search",
+            "Search videos",
+            (
+                Param("query", "what to search for"),
+                Param("limit", "max results", required=False, type=int, default=5),
+            ),
+            (("yt-dlp", "_ytdlp_search"),),
+            live_test={"query": "python tutorial", "limit": 2},
+        ),
+        Action(
+            "subtitle",
+            "Full subtitle text of a video (manual or auto captions)",
+            (
+                Param("target", "video link or id"),
+                Param("lang", "preferred languages, comma separated", required=False, default="zh-Hans,zh,en,en-orig"),
+            ),
+            (("yt-dlp", "_ytdlp_subtitle"),),
+            live_test={"target": "https://www.youtube.com/watch?v=jNQXAC9IVRw"},
+        ),
+        Action(
+            "transcribe",
+            "Speech-to-text of a video's audio (uses Groq/OpenAI Whisper quota)",
+            (Param("target", "video link or id"),),
+            (("whisper", "_whisper_transcribe"),),
+            timeout=1800,
+        ),
+    )
 
     def can_handle(self, url: str) -> bool:
-        from urllib.parse import urlparse
+        from agent_reach.utils.url import host_matches
 
-        d = urlparse(url).netloc.lower()
-        return "youtube.com" in d or "youtu.be" in d
+        return host_matches(url, "youtube.com", "youtu.be")
 
-    def check(self, config=None):
-        # 真跑 yt-dlp --version 探活，区分未装 / venv 断链 / 跑不动
-        probe = probe_command("yt-dlp", ["--version"], timeout=10, package="yt-dlp")
-        if probe.status == "missing":
-            self.active_backend = None
-            return "off", "yt-dlp 未安装。安装：pip install yt-dlp"
-        if probe.status == "broken":
-            self.active_backend = None
-            return "error", f"yt-dlp 已安装但无法执行\n{probe.hint}"
-        if not probe.ok:  # timeout / error：装了但跑不动
-            self.active_backend = None
-            detail = probe.hint or probe.output or probe.status
-            return "error", f"yt-dlp 无法正常运行：{detail}"
-        # yt-dlp 本体是活的；后面的 JS runtime/转写检查只影响 ok/warn，不影响后端归属
-        self.active_backend = "yt-dlp"
-        # Check JS runtime
-        has_js = shutil.which("deno") or shutil.which("node")
-        if not has_js:
-            return "warn", (
-                "yt-dlp 已安装但缺少 JS runtime（YouTube 必须）。\n"
-                "  安装 Node.js 或 deno，然后运行：agent-reach install"
+    # ── unified entry backends ──
+
+    def _ytdlp_read(self, *, target: str, timeout: float) -> list:
+        out = _run_ytdlp(["--dump-json", "--skip-download", _video_url(target)], timeout)
+        info = json.loads(out.splitlines()[-1])
+        return [
+            make_item(
+                title=info.get("title"),
+                url=info.get("webpage_url"),
+                author=info.get("uploader") or info.get("channel"),
+                published_at=_iso_date(info.get("upload_date")),
+                text=info.get("description"),
+                raw={k: info.get(k) for k in _RAW_KEYS},
             )
-        # Check yt-dlp config for --js-runtimes
-        # Deno works out of the box; Node.js requires explicit config
-        has_deno = shutil.which("deno")
-        if not has_deno:
-            ytdlp_config = get_ytdlp_config_path()
-            if not _has_js_runtime_config(ytdlp_config):
-                return "warn", (
-                    f"yt-dlp 已安装但未配置 JS runtime。运行：\n  {render_ytdlp_fix_command()}"
+        ]
+
+    def _ytdlp_search(self, *, query: str, limit: int, timeout: float) -> list:
+        out = _run_ytdlp(["--flat-playlist", "--dump-json", f"ytsearch{limit}:{query}"], timeout)
+        items = []
+        for line in out.splitlines():
+            if not line.strip():
+                continue
+            info = json.loads(line)
+            vid = info.get("id")
+            items.append(
+                make_item(
+                    title=info.get("title"),
+                    url=info.get("url") or (f"https://www.youtube.com/watch?v={vid}" if vid else None),
+                    author=info.get("channel") or info.get("uploader"),
+                    text=info.get("description"),
+                    raw={k: info.get(k) for k in _RAW_KEYS},
                 )
-        # Surface transcription readiness so `doctor` reports it.
-        msg = "可提取视频信息和字幕"
-        if config is not None:
-            providers = []
-            if config.is_configured("groq_whisper"):
-                providers.append("groq")
-            if config.is_configured("openai_whisper"):
-                providers.append("openai")
-            if providers:
-                if not shutil.which("ffmpeg"):
-                    msg += "（音频转写需安装 ffmpeg）"
-                else:
-                    msg += f"，可转写音频（{'→'.join(providers)}）"
-        return "ok", msg
+            )
+        return items
 
-    def transcribe(self, url: str, *, provider: str = "auto", config=None) -> str:
-        """Download a YouTube video's audio and return its transcript.
+    def _ytdlp_subtitle(self, *, target: str, lang: str, timeout: float) -> list:
+        url = _video_url(target)
+        wanted = [x.strip() for x in lang.split(",") if x.strip()]
+        with private_temporary_directory(prefix="agent-reach-subs-") as tmp:
+            out = _run_ytdlp(
+                [
+                    "--skip-download", "--no-simulate",
+                    "--write-subs", "--write-auto-subs",
+                    "--sub-langs", ",".join(wanted), "--sub-format", "vtt",
+                    "--print", "%(title)s",
+                    "-o", "%(id)s.%(ext)s",
+                    url,
+                ],
+                timeout,
+                cwd=tmp,
+            )
+            files = [f for f in os.listdir(tmp) if f.endswith(".vtt")]
+            if not files:
+                raise ReachError(NOT_FOUND, f"no subtitles in {', '.join(wanted)} for this video")
 
-        Delegates to :func:`agent_reach.transcribe.transcribe`. Imported lazily
-        so the channel module stays cheap to import for users who never
-        transcribe.
-        """
+            def rank(name: str) -> int:
+                code = name.rsplit(".", 2)[-2] if name.count(".") >= 2 else ""
+                return wanted.index(code) if code in wanted else len(wanted)
+
+            best = min(files, key=rank)
+            with open(os.path.join(tmp, best), encoding="utf-8", errors="replace") as fh:
+                text = vtt_to_text(fh.read())
+        title = next((ln for ln in out.splitlines() if ln.strip()), None)
+        code = best.rsplit(".", 2)[-2] if best.count(".") >= 2 else None
+        return [make_item(title=title, url=url, text=text, raw={"lang": code})]
+
+    def _whisper_transcribe(self, *, target: str, timeout: float) -> list:
+        from agent_reach.transcribe import NoProviderConfigured, TranscribeError
         from agent_reach.transcribe import transcribe as _transcribe
 
-        return _transcribe(url, provider=provider, config=config)
-
-    def fetch_transcript(
-        self,
-        url: str,
-        *,
-        lang: str = "en",
-        config=None,
-        allow_whisper: bool = True,
-    ) -> tuple[str | None, str | None]:
-        """Return (transcript, source) for a video, trying cheapest source first.
-
-        Order: manual subtitles → auto subtitles → Whisper transcription.
-        source is one of "subtitles", "auto_subtitles", "whisper", or None when
-        nothing is available. Whisper failures fall through to (None, None) so a
-        single bad link can never raise out of a batch.
-        """
-        with tempfile.TemporaryDirectory(prefix="yt-subs-") as tmpdir:
-            manual = _download_subtitles(url, lang, tmpdir, auto=False)
-            if manual:
-                return _clean_vtt(manual), "subtitles"
-
-            auto = _download_subtitles(url, lang, tmpdir, auto=True)
-            if auto:
-                return _clean_vtt(auto), "auto_subtitles"
-
-        if not allow_whisper:
-            return None, None
-
-        from agent_reach.transcribe import TranscribeError
-
+        url = _video_url(target)
         try:
-            return self.transcribe(url, config=config), "whisper"
-        except TranscribeError:
-            return None, None
+            text = _transcribe(url)
+        except NoProviderConfigured:
+            raise ReachError(
+                "NEED_SETUP", "no Whisper API key configured",
+                hint="Ask the user for a free key from https://console.groq.com, then run `agent-reach configure groq-key`.",
+            ) from None
+        except TranscribeError as exc:
+            raise ReachError("UPSTREAM_BROKEN", str(exc)[:300]) from None
+        return [make_item(url=url, text=text)]

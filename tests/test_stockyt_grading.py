@@ -2,9 +2,8 @@
 """Tests for the deterministic ticker grader."""
 
 import json
-from unittest.mock import patch
 
-from agent_reach.cli import main
+from agent_reach.stockyt.cli import main
 from agent_reach.stockyt.grading import grade, integrity, leaderboard_markdown
 
 VPA = {"AuthorA": 5, "AuthorB": 5, "AuthorC": 5}
@@ -125,10 +124,8 @@ def test_grade_cli_writes_json_md_and_integrity(tmp_path):
     )
 
     out = tmp_path / "graded.json"
-    argv = ["agent-reach", "grade", "--extract-dir", str(tmp_path),
-            "--authors", str(tmp_path / "authors.json"), "-o", str(out)]
-    with patch("sys.argv", argv):
-        main()
+    assert main(["grade", "--extract-dir", str(tmp_path),
+                 "--authors", str(tmp_path / "authors.json"), "-o", str(out)]) == 0
 
     assert out.exists() and (tmp_path / "graded.md").exists()
     result = json.loads(out.read_text(encoding="utf-8"))

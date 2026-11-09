@@ -15,6 +15,7 @@ import subprocess
 from collections.abc import Iterable, Iterator, Mapping
 from datetime import date, timedelta
 
+from agent_reach.channels.youtube import _ytdlp_argv
 from agent_reach.utils.process import utf8_subprocess_env
 
 _YTDLP_PRINT = "%(id)s\t%(upload_date)s\t%(title)s"
@@ -32,8 +33,7 @@ def _run_ytdlp_lines(channel_id: str) -> Iterator[str]:
     iterating (early-stop). Raises CalledProcessError on a nonzero exit with no
     output consumed.
     """
-    cmd = [
-        "yt-dlp",
+    cmd = _ytdlp_argv(
         "--flat-playlist",
         "--extractor-args",
         "youtubetab:approximate_date",
@@ -41,7 +41,7 @@ def _run_ytdlp_lines(channel_id: str) -> Iterator[str]:
         "--print",
         _YTDLP_PRINT,
         _channel_url(channel_id),
-    ]
+    )
     proc = subprocess.Popen(
         cmd,
         stdout=subprocess.PIPE,

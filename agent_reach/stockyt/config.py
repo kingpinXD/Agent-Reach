@@ -1,10 +1,15 @@
 # -*- coding: utf-8 -*-
-"""The finance channels we track, in display order.
+"""The finance channels we track, in display order, and where outputs live.
 
 Plain data module — no behaviour beyond name<->id lookup.
 """
 
 from __future__ import annotations
+
+import os
+
+# Where pipeline runs, outputs and the channel cache live.
+OUTPUT_DIR = os.path.expanduser("~/Documents/Claude/Cowork Projects/YoutubeSummaries")
 
 # (display name, YouTube channel id). Order is preserved everywhere downstream.
 CHANNELS: list[tuple[str, str]] = [

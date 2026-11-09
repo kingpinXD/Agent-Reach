@@ -11,7 +11,9 @@ from __future__ import annotations
 import json
 import os
 
-DEFAULT_CACHE_DIR = os.path.expanduser("~/Downloads/YoutubeSummaries/.cache/channels")
+from agent_reach.stockyt.config import OUTPUT_DIR
+
+DEFAULT_CACHE_DIR = os.path.join(OUTPUT_DIR, ".cache", "channels")
 
 
 def _cache_file(channel_id: str, cache_dir: str) -> str:

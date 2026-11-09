@@ -15,6 +15,8 @@ import sys
 from collections.abc import Sequence
 from datetime import date, timedelta
 
+from agent_reach.stockyt.cache import DEFAULT_CACHE_DIR
+
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="agent-reach stockyt",
@@ -24,8 +26,7 @@ def _parser() -> argparse.ArgumentParser:
     p_ch = sub.add_parser("channels", help="List finance-channel uploads by recency into a links file")
     p_ch.add_argument("--weeks", type=int, required=True, help="Keep videos uploaded within the last N weeks")
     p_ch.add_argument("-o", "--output", default=None, help="Write watch URLs here, one per line")
-    p_ch.add_argument("--cache", default=None,
-                      help="Cache directory (default: ~/Downloads/YoutubeSummaries/.cache/channels)")
+    p_ch.add_argument("--cache", default=None, help=f"Cache directory (default: {DEFAULT_CACHE_DIR})")
     p_ch.add_argument("--channels-json", default=None, help="Also write a structured per-channel JSON here")
     p_ch.add_argument("--no-cache", action="store_true", help="Skip the cache: always fetch the full window")
 
@@ -81,7 +82,7 @@ def _cmd_channels(args) -> int:
     from agent_reach.stockyt import channels as channels_mod
     from agent_reach.stockyt import config as stockyt_config
 
-    cache_dir = args.cache or cache_mod.DEFAULT_CACHE_DIR
+    cache_dir = args.cache or DEFAULT_CACHE_DIR
     cutoff = (date.today() - timedelta(weeks=args.weeks)).strftime("%Y%m%d")
 
     all_urls = []

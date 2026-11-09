@@ -58,10 +58,16 @@ def _parser() -> argparse.ArgumentParser:
     p_sc.add_argument("--out-dir", required=True, help="Directory for authors.json + chunk_*.jsonl")
     p_sc.add_argument("--chunks", type=int, default=30, help="Max contiguous chunks (default: 30)")
 
+    p_ra = sub.add_parser("review-apply",
+                          help="Apply the two-round ticker review: write reviewed_*.jsonl from the review files")
+    p_ra.add_argument("--run-dir", required=True, help="Run directory with chunk/extract/review/response files")
+
     p_gr = sub.add_parser("grade", help="Grade extracted ticker mentions into ranked leaderboards")
     p_gr.add_argument("--extract-dir", required=True, help="Directory of extract_*.jsonl ticker rows")
     p_gr.add_argument("--authors", required=True, help="authors.json with videos_per_author + total_authors")
     p_gr.add_argument("-o", "--output", required=True, help="Write the graded leaderboard JSON here")
+    p_gr.add_argument("--reviewed", action="store_true",
+                      help="Grade reviewed_*.jsonl (from review-apply) instead of extract_*.jsonl")
     return parser
 
 
@@ -71,6 +77,7 @@ def main(argv: Sequence[str]) -> int:
         "channels": _cmd_channels,
         "transcripts": _cmd_transcripts,
         "split-corpus": _cmd_split_corpus,
+        "review-apply": _cmd_review_apply,
         "grade": _cmd_grade,
     }
     return handlers[args.command](args)
@@ -202,18 +209,65 @@ def _cmd_split_corpus(args) -> int:
     return 0
 
 
-def _cmd_grade(args) -> int:
-    """Grade extracted ticker rows into bullish/bearish leaderboards."""
-    from agent_reach.stockyt.grading import grade, integrity, leaderboard_markdown
+def _cmd_review_apply(args) -> int:
+    """Turn each chunk's extract + review files into reviewed_NN.jsonl."""
+    from agent_reach.stockyt.review import review_run
 
-    extract_rows = []
-    for path in sorted(glob.glob(os.path.join(args.extract_dir, "extract_*.jsonl"))):
-        extract_rows.extend(_read_jsonl(path))
+    counts = review_run(args.run_dir)
+    print(f"Reviewed {counts['reviewed_chunks']}/{counts['chunks']} chunks: "
+          f"{counts['confirmed']} confirmed · {counts['corrected']} corrected · {counts['added']} added · "
+          f"{counts['dropped']} dropped · {counts['disputed']} disputed "
+          f"(+{counts['disputed_missed']} disputed missed tickers)")
+    for problem in counts["problems"]:
+        print(f"  ❌ {problem}")
+    print("Review: OK" if counts["ok"] else "Review: FAIL — fix the chunks above and re-run review-apply")
+    return 0 if counts["ok"] else 1
+
+
+def _reviewed_rows(run_dir: str) -> tuple[list[dict], dict]:
+    """Rows of every reviewed_NN.jsonl plus the review counts; raises ValueError if the review is incomplete."""
+    summary_path = os.path.join(run_dir, "review_summary.json")
+    if not os.path.exists(summary_path):
+        raise ValueError("no review_summary.json — run `agent-reach stockyt review-apply` first")
+    with open(summary_path, encoding="utf-8") as f:
+        summary = json.load(f)
+    if not summary.get("ok"):
+        raise ValueError("review_summary.json says the review is not ok — fix it and re-run review-apply")
+    rows = []
+    missing = []
+    for extract_path in sorted(glob.glob(os.path.join(run_dir, "extract_*.jsonl"))):
+        reviewed_path = os.path.join(run_dir, os.path.basename(extract_path).replace("extract_", "reviewed_", 1))
+        if not os.path.exists(reviewed_path):
+            missing.append(os.path.basename(reviewed_path))
+            continue
+        rows.extend(_read_jsonl(reviewed_path))
+    if missing:
+        raise ValueError(f"missing {', '.join(missing)}")
+    return rows, summary
+
+
+def _cmd_grade(args) -> int:
+    """Grade extracted (or reviewed) ticker rows into bullish/bearish leaderboards."""
+    from agent_reach.stockyt.grading import grade, integrity, leaderboard_markdown, review_line
+
+    review = None
+    if args.reviewed:
+        try:
+            extract_rows, review = _reviewed_rows(args.extract_dir)
+        except ValueError as e:
+            print(f"❌ Review: FAIL — {e}", file=sys.stderr)
+            return 1
+    else:
+        extract_rows = []
+        for path in sorted(glob.glob(os.path.join(args.extract_dir, "extract_*.jsonl"))):
+            extract_rows.extend(_read_jsonl(path))
 
     with open(args.authors, encoding="utf-8") as f:
         authors = json.load(f)
 
     result = grade(extract_rows, authors["videos_per_author"], authors["total_authors"])
+    if review is not None:
+        result["review"] = review
 
     integ = integrity(args.extract_dir, authors.get("N", 0))
     if integ is not None:
@@ -236,6 +290,8 @@ def _cmd_grade(args) -> int:
         flag = " CONTESTED" if v["contested"] else ""
         print(f"{i:2}. {v['ticker']:6} {v['tier']} {v['score']:5} | {v['breadth']}/{result['total_authors']} auth{flag} | {v['company'][:30]}")
 
+    if review is not None:
+        print(f"\n{review_line(review, result['disputed'])}")
     if integ is None:
         print("\nIntegrity: chunk files not found in --extract-dir, skipped")
     else:

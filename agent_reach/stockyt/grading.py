@@ -150,13 +150,21 @@ def _board(summaries: list[dict], score_key: str) -> list[dict]:
 def grade(extract_rows: list[dict], videos_per_author: dict, total_authors: int) -> dict:
     """Grade extracted ticker mentions into bullish/bearish leaderboards.
 
-    Returns {"bullish": [...], "bearish": [...], "tickers": {ticker: summary}}.
+    Returns {"bullish": [...], "bearish": [...], "tickers": {ticker: summary},
+    "disputed": {ticker: count}}. Rows the review dropped or left disputed add
+    nothing to any ticker; disputed ones are only counted in `disputed`.
     `total_authors` is carried through for downstream breadth display.
     """
     by_ticker: dict[str, list[dict]] = defaultdict(list)
+    disputed: Counter = Counter()
     for row in extract_rows:
         ticker = _normalize_ticker(row)
         if ticker is None:
+            continue
+        status = row.get("review_status")
+        if status == "disputed":
+            disputed[ticker] += 1
+        if status in ("dropped", "disputed"):
             continue
         by_ticker[ticker].append(row)
 
@@ -173,6 +181,7 @@ def grade(extract_rows: list[dict], videos_per_author: dict, total_authors: int)
         "bullish": _board(all_summaries, "bull_score"),
         "bearish": _board(all_summaries, "bear_score"),
         "tickers": summaries,
+        "disputed": dict(disputed),
     }
 
 
@@ -185,36 +194,55 @@ def _thesis_cell(entry, width: int = 70) -> str:
     return text[: width - 1] + "…" if len(text) > width else text
 
 
-def _md_table(rows: list[dict], total_authors: int, limit: int = 25) -> str:
+def _md_table(rows: list[dict], total_authors: int, disputed: dict | None = None, limit: int = 25) -> str:
+    """Leaderboard table; a Disputed column is added when `disputed` is given (reviewed runs)."""
+    extra = " Disputed |" if disputed is not None else ""
     header = (
-        "| Rank | Ticker | Company | Tier | Score | Breadth | Contested | Thesis |\n"
-        "|---|---|---|---|---|---|---|---|"
+        f"| Rank | Ticker | Company | Tier | Score | Breadth | Contested |{extra} Thesis |\n"
+        "|---|---|---|---|---|---|---|" + ("---|" if disputed is not None else "") + "---|"
     )
     lines = [header]
     for rank, v in enumerate(rows[:limit], 1):
         thesis = _thesis_cell((v.get("top_theses") or [None])[0])
         contested = "⚔️" if v.get("contested") else ""
+        cell = f" {disputed.get(v['ticker'], 0) or ''} |" if disputed is not None else ""
         lines.append(
             f"| {rank} | {v['ticker']} | {str(v.get('company') or '').replace('|', '/')} "
-            f"| {v['tier']} | {v['score']} | {v['breadth']}/{total_authors} | {contested} | {thesis} |"
+            f"| {v['tier']} | {v['score']} | {v['breadth']}/{total_authors} | {contested} |{cell} {thesis} |"
         )
     return "\n".join(lines)
 
 
+def review_line(review: dict, disputed: dict) -> str:
+    """One-line summary of what the two-round review changed."""
+    counts = " · ".join(f"{review[s]} {s}" for s in ("confirmed", "corrected", "added", "dropped", "disputed"))
+    line = f"Review: {counts} (+{review['disputed_missed']} disputed missed tickers, not added)"
+    if disputed:
+        top = sorted(disputed.items(), key=lambda kv: (-kv[1], kv[0]))
+        line += ". Disputed rows (left out of the scores): " + ", ".join(f"{t} {n}" for t, n in top)
+    return line
+
+
 def leaderboard_markdown(result: dict) -> str:
-    """Render the graded result as a Markdown leaderboard (top 25 each board)."""
+    """Render the graded result as a Markdown leaderboard (top 25 each board).
+
+    A reviewed result (one carrying `review` counts) also gets a review line and a Disputed column.
+    """
     total_authors = result["total_authors"]
     total_tickers = len(result["tickers"])
-    parts = [
-        f"# Ticker Leaderboard ({total_tickers} tickers · {total_authors} authors)",
-        "",
+    review = result.get("review")
+    disputed = result.get("disputed", {}) if review else None
+    parts = [f"# Ticker Leaderboard ({total_tickers} tickers · {total_authors} authors)", ""]
+    if review:
+        parts += [review_line(review, disputed), ""]
+    parts += [
         "## Bullish",
         "",
-        _md_table(result["bullish"], total_authors),
+        _md_table(result["bullish"], total_authors, disputed),
         "",
         "## Bearish",
         "",
-        _md_table(result["bearish"], total_authors),
+        _md_table(result["bearish"], total_authors, disputed),
         "",
     ]
     return "\n".join(parts)

@@ -15,20 +15,32 @@ import sys
 from collections.abc import Sequence
 from datetime import date, datetime, timedelta
 
-from agent_reach.stockyt.cache import DEFAULT_CACHE_DIR
+_EXIT_CODES = {"done": 0, "failed": 1, "blocked": 2}
 
 
-def _since_date(value: str) -> date:
-    """argparse type for --since: a real, non-future YYYYMMDD day."""
+def _since_value(value: str) -> str:
+    """argparse type for --since: YYYYMMDD or YYYYMMDDTHHMM, not in the future. The time of day is
+    read in the configured timezone later, by channels.parse_since."""
+    from agent_reach.stockyt.channels import parse_since
+
+    try:
+        day = parse_since(value, "UTC").day
+    except ValueError as e:
+        raise argparse.ArgumentTypeError(str(e)) from None
+    if day > date.today():
+        raise argparse.ArgumentTypeError(f"{value} is in the future")
+    return value
+
+
+def _day_value(value: str) -> str:
+    """argparse type for --until: a real YYYYMMDD day."""
     try:
         if len(value) != 8 or not value.isdigit():
             raise ValueError
-        day = datetime.strptime(value, "%Y%m%d").date()
+        datetime.strptime(value, "%Y%m%d")
     except ValueError:
         raise argparse.ArgumentTypeError(f"not a YYYYMMDD date: {value!r}") from None
-    if day > date.today():
-        raise argparse.ArgumentTypeError(f"{value} is in the future")
-    return day
+    return value
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -39,24 +51,36 @@ def _parser() -> argparse.ArgumentParser:
     p_ch = sub.add_parser("channels", help="List finance-channel uploads by recency into a links file")
     window = p_ch.add_mutually_exclusive_group(required=True)
     window.add_argument("--weeks", type=int, help="Keep videos uploaded within the last N weeks")
-    window.add_argument("--since", type=_since_date, help="Keep videos uploaded on or after this day (YYYYMMDD)")
+    window.add_argument("--since", type=_since_value,
+                        help="Keep videos uploaded from this day (YYYYMMDD) or moment (YYYYMMDDTHHMM, "
+                             "in the configured timezone)")
+    p_ch.add_argument("--until", type=_day_value, default=None,
+                      help="Keep videos uploaded on or before this day (YYYYMMDD)")
     p_ch.add_argument("-o", "--output", default=None, help="Write watch URLs here, one per line")
-    p_ch.add_argument("--cache", default=None, help=f"Cache directory (default: {DEFAULT_CACHE_DIR})")
+    p_ch.add_argument("--cache", default=None,
+                      help="Cache directory (default: <output_dir>/.cache/channels); read only when a listing fails")
     p_ch.add_argument("--channels-json", default=None, help="Also write a structured per-channel JSON here")
-    p_ch.add_argument("--no-cache", action="store_true", help="Skip the cache: always fetch the full window")
+    p_ch.add_argument("--no-cache", action="store_true", help="Neither read nor update the cache")
 
-    p_tr = sub.add_parser("transcripts", help="Batch-fetch YouTube transcripts to JSONL (captions → Whisper)")
+    p_tr = sub.add_parser("transcripts", help="Fetch YouTube transcripts to JSONL, one video at a time")
     p_tr.add_argument("url", nargs="?", default=None, help="A single YouTube URL")
     p_tr.add_argument("--file", default=None,
                       help="File of YouTube URLs, one per line (# comments and blank lines skipped)")
-    p_tr.add_argument("-o", "--output", default=None, help="Write JSONL here instead of stdout")
-    p_tr.add_argument("--lang", default="en", help="Subtitle language (default: en)")
-    p_tr.add_argument("--no-whisper", action="store_true", help="Disable the Whisper fallback (captions only)")
+    p_tr.add_argument("-o", "--output", default=None,
+                      help="Write JSONL here (re-running skips videos already ok); default: stdout")
+    p_tr.add_argument("--lang", default=None, help="Caption language; <lang>-orig is preferred (default: en)")
+    whisper = p_tr.add_mutually_exclusive_group()
+    whisper.add_argument("--whisper", dest="whisper", action="store_true", default=None,
+                         help="Fall back to Whisper when a video has no captions")
+    whisper.add_argument("--no-whisper", dest="whisper", action="store_false", help="Captions only (default)")
+    p_tr.add_argument("--cookies-from-browser", default=None,
+                      help="Send this browser's YouTube cookies (only with the user's OK)")
 
     p_sc = sub.add_parser("split-corpus", help="Split a transcripts JSONL into authors.json + chunk_*.jsonl")
     p_sc.add_argument("--input", required=True, help="transcripts.jsonl from the transcripts command")
     p_sc.add_argument("--out-dir", required=True, help="Directory for authors.json + chunk_*.jsonl")
-    p_sc.add_argument("--chunks", type=int, default=30, help="Max contiguous chunks (default: 30)")
+    p_sc.add_argument("--chunk-chars", type=int, default=None,
+                      help="Transcript characters per chunk (default: the configured chunk_chars)")
 
     p_ra = sub.add_parser("review-apply",
                           help="Apply the two-round ticker review: write reviewed_*.jsonl from the review files")
@@ -99,113 +123,88 @@ def _read_jsonl(path: str) -> list[dict]:
 
 
 def _cmd_channels(args) -> int:
-    """List each tracked finance channel's recent uploads into a links file."""
-    from agent_reach.stockyt import cache as cache_mod
+    """List each tracked finance channel's uploads in the window into a links file."""
     from agent_reach.stockyt import channels as channels_mod
-    from agent_reach.stockyt import config as stockyt_config
+    from agent_reach.stockyt.config import load_settings
+    from agent_reach.stockyt.run import atomic_write_json, atomic_write_text
 
-    cache_dir = args.cache or DEFAULT_CACHE_DIR
-    cutoff = args.since or date.today() - timedelta(weeks=args.weeks)
-    cutoff_str = cutoff.strftime("%Y%m%d")
+    settings = load_settings()
+    if args.since:
+        cutoff = channels_mod.parse_since(args.since, settings.timezone)
+    else:
+        cutoff = channels_mod.Cutoff(date.today() - timedelta(weeks=args.weeks))
+    cache_dir = None if args.no_cache else (args.cache or settings.cache_dir)
 
-    all_urls = []
-    json_channels = []
-    total = 0
-    failed = 0
-    for name, channel_id in stockyt_config.CHANNELS:
-        existing = None if args.no_cache else cache_mod.load(channel_id, cache_dir)
-        try:
-            fresh = channels_mod.list_channel_videos(channel_id, cutoff=cutoff, cache=existing)
-            if not args.no_cache:
-                cache_mod.merge(channel_id, fresh, cache_dir)
-                window = cache_mod.all_in_window(channel_id, cutoff_str, cache_dir)
-            else:
-                window = sorted(fresh, key=lambda r: r["upload_date"], reverse=True)
-        except Exception as e:
-            # One channel's transient yt-dlp failure must not abort the sweep.
-            # Fall back to whatever is already cached for its window.
-            failed += 1
-            window = [] if args.no_cache else cache_mod.all_in_window(channel_id, cutoff_str, cache_dir)
-            print(f"  ⚠️ {name}: fetch failed — {e} (kept {len(window)} cached videos in window)")
-        else:
-            print(f"  {name}: {len(window)} videos, oldest {window[-1]['upload_date'] if window else '—'}")
+    results = channels_mod.sweep(settings.channels, cutoff, until=args.until, cache_dir=cache_dir,
+                                 pace_seconds=settings.pace_seconds)
+    for r in results:
+        if not r.error:
+            print(f"  {r.name}: {len(r.rows)} videos, oldest {r.rows[-1]['upload_date'] if r.rows else '—'}")
+    status, lines = channels_mod.check(results)
+    for line in lines:
+        print(line)
 
-        total += len(window)
-        all_urls.extend(f"https://www.youtube.com/watch?v={r['video_id']}" for r in window)
-        json_channels.append({
-            "channel": name,
-            "channel_id": channel_id,
-            "count": len(window),
-            "oldest_date": window[-1]["upload_date"] if window else None,
-            "videos": window,
-        })
-
-    print(f"Total: {total} videos across {len(stockyt_config.CHANNELS)} channels"
-          + (f" ({failed} failed this run)" if failed else ""))
-    integrity = sum(c["count"] for c in json_channels)
-    print(f"Integrity: {len(all_urls)} URLs == {integrity} summed per-channel counts "
-          f"({'ok' if len(all_urls) == integrity else 'MISMATCH'})")
-
+    urls = channels_mod.window_urls(results)
     if args.output:
-        with open(args.output, "w", encoding="utf-8") as f:
-            f.write("\n".join(all_urls) + ("\n" if all_urls else ""))
-        print(f"✅ {len(all_urls)} URLs → {args.output}")
-
+        atomic_write_text(args.output, "".join(url + "\n" for url in urls))
+        print(f"✅ {len(urls)} URLs → {args.output}")
     if args.channels_json:
-        with open(args.channels_json, "w", encoding="utf-8") as f:
-            json.dump(json_channels, f, ensure_ascii=False, indent=2)
+        atomic_write_json(args.channels_json, [
+            {"channel": r.name, "channel_id": r.channel_id, "count": len(r.rows),
+             "oldest_date": r.rows[-1]["upload_date"] if r.rows else None, "reached_cutoff": r.reached_cutoff,
+             "error": r.error, "videos": r.rows}
+            for r in results
+        ])
         print(f"✅ Structured channels → {args.channels_json}")
-    return 0
+    return _EXIT_CODES[status]
 
 
 def _cmd_transcripts(args) -> int:
-    """Batch-fetch YouTube transcripts and emit one JSON record per link."""
-    from agent_reach.stockyt.transcripts import fetch_record, read_link_file
+    """Fetch transcripts one video at a time into JSONL; exit 1 on missing rows, 2 on a rate limit."""
+    import dataclasses
+    import tempfile
+
+    from agent_reach.stockyt import transcripts
+    from agent_reach.stockyt.config import load_settings
 
     if bool(args.url) == bool(args.file):
         print("❌ Provide exactly one of a URL argument or --file", file=sys.stderr)
         return 1
 
-    links = read_link_file(args.file) if args.file else [args.url]
+    settings = load_settings()
+    overrides = {"lang": args.lang, "whisper": args.whisper, "cookies_from_browser": args.cookies_from_browser}
+    settings = dataclasses.replace(settings, **{k: v for k, v in overrides.items() if v is not None})
+    links = transcripts.read_link_file(args.file) if args.file else [args.url]
 
-    out = open(args.output, "w", encoding="utf-8") if args.output else None
-    ok = 0
-    errors = 0
-    try:
-        for url in links:
-            record = fetch_record(url, lang=args.lang, allow_whisper=not args.no_whisper)
-            if record["status"] == "ok":
-                ok += 1
-            else:
-                errors += 1
-            line = json.dumps(record, ensure_ascii=False)
-            if out:
-                out.write(line + "\n")
-                out.flush()  # append-as-you-go so partial progress survives a crash
-            else:
-                print(line)
-    finally:
-        if out:
-            out.close()
+    if args.output:
+        rows = transcripts.fetch_all(links, args.output, settings)
+    else:
+        with tempfile.TemporaryDirectory(prefix="stockyt-transcripts-") as tmp:
+            rows = transcripts.fetch_all(links, os.path.join(tmp, "transcripts.jsonl"), settings)
+        for row in rows:
+            print(json.dumps(row, ensure_ascii=False))
 
-    dest = args.output if args.output else "stdout"
-    print(f"✅ {ok} ok / {errors} errors → {dest}", file=sys.stderr)
-    return 0
+    status, lines = transcripts.check(links, rows)
+    for line in lines:
+        print(line, file=sys.stderr)
+    print(f"→ {args.output or 'stdout'}", file=sys.stderr)
+    return _EXIT_CODES[status]
 
 
 def _cmd_split_corpus(args) -> int:
     """Split a transcripts JSONL into authors.json + contiguous chunk files."""
+    from agent_reach.stockyt.config import load_settings
     from agent_reach.stockyt.corpus import split_corpus
 
-    authors, num_chunks = split_corpus(_read_jsonl(args.input), args.out_dir, chunks=args.chunks)
+    chunk_chars = args.chunk_chars or load_settings().chunk_chars
+    authors, num_chunks = split_corpus(_read_jsonl(args.input), args.out_dir, chunk_chars)
 
-    n = authors["N"]
-    print(f"Kept {n} ok records → {args.out_dir}")
+    print(f"Kept {authors['N']} ok records (one per video) → {args.out_dir}")
     print(f"Authors: {authors['total_authors']}")
     for channel, count in sorted(authors["videos_per_author"].items(), key=lambda kv: -kv[1]):
         print(f"  {channel}: {count}")
-    chunk_size = -(-n // num_chunks) if num_chunks else 0  # ceil, for display
-    print(f"Wrote {num_chunks} chunks (~{chunk_size} records each) + authors.json")
+    print(f"Wrote {num_chunks} chunks (~{chunk_chars} transcript characters each at most, "
+          "or one longer video) + authors.json")
     return 0
 
 

@@ -1,6 +1,5 @@
 # -*- coding: utf-8 -*-
-"""StockYT — deterministic YouTube-finance pipeline (channel listing + ticker grading).
+"""StockYT — finance-YouTube pipeline: channel listing, transcripts, ticker extraction and grading."""
 
-No LLM lives here. Ticker extraction stays in a separate command; this package
-only lists channel videos by recency and grades already-extracted ticker rows.
-"""
+# stockyt's own version, written into each run's run.json (the fork carries upstream's version).
+STOCKYT_VERSION = "2.0.0"

@@ -1,74 +1,72 @@
 # -*- coding: utf-8 -*-
-"""List a channel's recent uploads via yt-dlp's flat playlist view.
+"""The channels stage: each tracked channel's uploads inside the window, from yt-dlp's flat listing.
 
-The validated command shape prints `id<TAB>upload_date<TAB>title`, newest-first,
-without fetching each video page:
-
-    yt-dlp --flat-playlist --extractor-args "youtubetab:approximate_date"
-           --lazy-playlist --print "%(id)s\\t%(upload_date)s\\t%(title)s"
-           "https://www.youtube.com/channel/<id>/videos"
+The listing (youtube.list_channel) is newest first and its date is the real upload date or one day
+late, never earlier. So the listing is read until the first row dated before the window start,
+and only rows near an edge of the window cost a per-video time check (youtube.video_time).
 """
 
 from __future__ import annotations
 
-import subprocess
-from collections.abc import Callable, Iterable, Iterator, Mapping
-from datetime import date
+import time
+from collections.abc import Callable, Iterable
+from dataclasses import dataclass
+from datetime import date, datetime, timedelta
+from zoneinfo import ZoneInfo
 
-from agent_reach.channels.youtube import _ytdlp_argv
-from agent_reach.utils.process import utf8_subprocess_env
+from agent_reach.stockyt import cache as cache_mod
+from agent_reach.stockyt import youtube
 
-_YTDLP_PRINT = "%(id)s\t%(upload_date)s\t%(title)s"
-
-
-def _channel_url(channel_id: str) -> str:
-    return f"https://www.youtube.com/channel/{channel_id}/videos"
+LogCall = Callable[[str, str, float, str], None]
 
 
-def _run_ytdlp_lines(channel_id: str) -> Iterator[str]:
-    """Stream raw `id\\tdate\\ttitle` lines from yt-dlp, newest-first.
+@dataclass(frozen=True)
+class Cutoff:
+    """Window start: a day, or a moment (`at`, timezone-aware) when --since had a time of day."""
 
-    Isolated so tests can monkeypatch it with canned lines (no network).
-    Yields decoded stdout lines; terminates the process when the caller stops
-    iterating (early-stop). Raises CalledProcessError on a nonzero exit with no
-    output consumed.
-    """
-    cmd = _ytdlp_argv(
-        "--flat-playlist",
-        "--extractor-args",
-        "youtubetab:approximate_date",
-        "--lazy-playlist",
-        "--print",
-        _YTDLP_PRINT,
-        _channel_url(channel_id),
-    )
-    proc = subprocess.Popen(
-        cmd,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        encoding="utf-8",
-        errors="replace",
-        env=utf8_subprocess_env(),
-    )
-    yielded = False
-    early_stop = True
+    day: date
+    at: datetime | None = None
+
+    @property
+    def day_str(self) -> str:
+        return self.day.strftime("%Y%m%d")
+
+    def check_days(self) -> set[str]:
+        """Listing dates whose rows need their real time: the start day, plus the next day for a time cutoff
+        (a row listed a day late may be from before the cutoff time)."""
+        days = {self.day}
+        if self.at is not None:
+            days.add(self.day + timedelta(days=1))
+        return {d.strftime("%Y%m%d") for d in days}
+
+
+def parse_since(value: str, timezone: str) -> Cutoff:
+    """`YYYYMMDD` or `YYYYMMDDTHHMM` (read in `timezone`) → Cutoff. Raises ValueError otherwise."""
+    error = ValueError(f"not a YYYYMMDD or YYYYMMDDTHHMM value: {value!r}")
     try:
-        assert proc.stdout is not None
-        for line in proc.stdout:
-            yielded = True
-            yield line.rstrip("\n")
-        early_stop = False  # stdout drained on its own — not a caller early-stop
-    finally:
-        # Caller may stop early (cutoff / cache hit) — kill the still-running
-        # process rather than waiting for the whole channel to drain.
-        if proc.poll() is None:
-            proc.terminate()
-        stderr = proc.stderr.read() if proc.stderr else ""
-        proc.wait()
-        # Only treat a nonzero exit as fatal when yt-dlp truly failed: it ran to
-        # completion (no early-stop) and gave us nothing.
-        if proc.returncode and not yielded and not early_stop:
-            raise subprocess.CalledProcessError(proc.returncode, cmd, stderr=stderr)
+        if len(value) == 8 and value.isdigit():
+            return Cutoff(datetime.strptime(value, "%Y%m%d").date())
+        if len(value) == 13 and value[8] == "T" and (value[:8] + value[9:]).isdigit():
+            at = datetime.strptime(value, "%Y%m%dT%H%M").replace(tzinfo=ZoneInfo(timezone))
+            return Cutoff(at.date(), at)
+    except ValueError:
+        raise error from None
+    raise error
+
+
+@dataclass
+class Listing:
+    rows: list[dict]
+    reached_cutoff: bool  # the listing reached a row older than the window start
+
+
+@dataclass
+class ChannelResult:
+    name: str
+    channel_id: str
+    rows: list[dict]  # the window, newest first
+    reached_cutoff: bool
+    error: str | None = None  # the fetch failed and `rows` came from the cache
 
 
 def _parse_line(line: str, channel_id: str) -> dict | None:
@@ -78,71 +76,64 @@ def _parse_line(line: str, channel_id: str) -> dict | None:
         return None
     video_id, upload_date = parts[0].strip(), parts[1].strip()
     title = parts[2] if len(parts) > 2 else ""
-    if not video_id or upload_date.upper() in ("", "NA", "NONE"):
-        return None
-    if len(upload_date) != 8 or not upload_date.isdigit():
+    if not video_id or len(upload_date) != 8 or not upload_date.isdigit():
         return None
     return {
         "video_id": video_id,
         "upload_date": upload_date,
         "title": title,
         "channel_id": channel_id,
+        "date_source": "listing",
     }
 
 
-def _real_upload_date(video_id: str) -> str | None:
-    """The video's own upload_date (YYYYMMDD) from its watch page, or None if it can't be read."""
-    cmd = _ytdlp_argv("--skip-download", "--print", "%(upload_date)s",
-                      f"https://www.youtube.com/watch?v={video_id}")
-    try:
-        out = subprocess.run(cmd, capture_output=True, encoding="utf-8", errors="replace",
-                             env=utf8_subprocess_env(), timeout=120).stdout.strip()
-    except (OSError, subprocess.SubprocessError):
-        return None
-    return out if len(out) == 8 and out.isdigit() else None
+def _next_day(yyyymmdd: str) -> str:
+    return (datetime.strptime(yyyymmdd, "%Y%m%d") + timedelta(days=1)).strftime("%Y%m%d")
+
+
+def _in_window(row: dict, cutoff: Cutoff, until: str | None,
+               video_time: Callable[[str], tuple[str | None, int | None]]) -> bool:
+    """Whether a row listed on or after the cutoff day is in the window; looks up its real time near an edge.
+
+    A row whose real time can't be read is kept and marked `date_verified: False`.
+    """
+    listed = row["upload_date"]
+    day_after_until = _next_day(until) if until else None
+    if day_after_until and listed > day_after_until:
+        return False
+    if listed not in cutoff.check_days() and listed != day_after_until:
+        return True
+
+    upload_date, timestamp = video_time(row["video_id"])
+    if upload_date is None:
+        row["date_verified"] = False
+        return True
+    row.update(upload_date=upload_date, timestamp=timestamp, date_source="video")
+    if until and upload_date > until:
+        return False
+    if cutoff.at is None:
+        return upload_date >= cutoff.day_str
+    if timestamp is None:
+        row["date_verified"] = False
+        return upload_date >= cutoff.day_str
+    return timestamp >= cutoff.at.timestamp()
 
 
 def list_channel_videos(
     channel_id: str,
     *,
-    cutoff: date,
-    cache: Mapping[str, dict] | None = None,
-    _lines: Iterable[str] | None = None,
-    _real_date: Callable[[str], str | None] = _real_upload_date,
-) -> list[dict]:
-    """Uploads for a channel on or after `cutoff`, newest-first.
+    cutoff: Cutoff,
+    until: str | None = None,
+    lines: Iterable[str] | None = None,
+    video_time: Callable[[str], tuple[str | None, int | None]] | None = None,
+) -> Listing:
+    """Uploads from `cutoff` to `until` (YYYYMMDD, inclusive, by real date), newest first.
 
-    Returns rows {video_id, upload_date (YYYYMMDD), title, channel_id}.
-
-    EARLY STOP: yt-dlp prints newest-first, so we always stop reading once we hit
-    a video whose upload_date < cutoff — everything beyond is out-of-window. As an
-    optimization we also stop on a video_id already in `cache`, but ONLY when the
-    cache is known to already reach back to the cutoff (its oldest cached upload_date
-    <= cutoff). Otherwise a grown window (cache seeded from a smaller window) would
-    stop at the first cached id and never back-fill the older in-window videos.
-
-    CUTOFF DAY: the flat listing's approximate date is the real upload date or one
-    day later, never earlier (checked against per-video dates, 2026-11-08). So a row
-    dated after the cutoff is in the window and a row dated before it is out, but a
-    row dated exactly on the cutoff may really be from the day before. Those rows get
-    their real date from `_real_date`; one that can't be read is kept and marked
-    `date_verified: False`.
-
-    Bad lines (missing/`NA` date) are skipped, never fatal. `_lines` and `_real_date`
-    override the yt-dlp calls for tests.
+    Rows: {video_id, upload_date, title, channel_id, date_source[, timestamp][, date_verified]}.
+    Bad lines (missing/`NA` date) are skipped. Raises RuntimeError when no line parses.
     """
-    cutoff_str = cutoff.strftime("%Y%m%d")
-
-    lines = _lines if _lines is not None else _run_ytdlp_lines(channel_id)
-
-    # Oldest upload_date the cache already covers. The cached-id early-stop is only
-    # safe once the cache reaches the cutoff (cache_floor <= cutoff_str); a newer
-    # floor means the requested window grew and older videos still need back-filling.
-    cache_floor = (
-        min(row["upload_date"] for row in cache.values()) if cache else None
-    )
-    cache_reaches_cutoff = cache_floor is not None and cache_floor <= cutoff_str
-
+    lines = youtube.list_channel(channel_id) if lines is None else lines
+    video_time = video_time or youtube.video_time
     rows: list[dict] = []
     parsed_any = False
     for line in lines:
@@ -150,23 +141,76 @@ def list_channel_videos(
         if row is None:
             continue
         parsed_any = True
-        if row["upload_date"] < cutoff_str:
-            break
-        if cache_reaches_cutoff and row["video_id"] in cache:
-            break
-        if row["upload_date"] == cutoff_str:
-            real = _real_date(row["video_id"])
-            if real is None:
-                row["date_verified"] = False
-            elif real < cutoff_str:
-                continue
-            else:
-                row["upload_date"] = real
-        rows.append(row)
-
-    if not parsed_any and _lines is None:
-        # yt-dlp produced nothing parseable — surface it instead of silently
-        # returning an empty window.
+        if row["upload_date"] < cutoff.day_str:
+            return Listing(rows, reached_cutoff=True)
+        if _in_window(row, cutoff, until, video_time):
+            rows.append(row)
+    if not parsed_any:
         raise RuntimeError(f"yt-dlp returned no usable rows for channel {channel_id}")
+    return Listing(rows, reached_cutoff=False)
 
-    return rows
+
+def _newest_first(rows: list[dict]) -> list[dict]:
+    return sorted(rows, key=lambda r: r["upload_date"], reverse=True)
+
+
+def sweep(
+    channels: list[tuple[str, str]],
+    cutoff: Cutoff,
+    *,
+    until: str | None = None,
+    cache_dir: str | None = None,
+    pace_seconds: float = 0,
+    sleep: Callable[[float], None] = time.sleep,
+    log: LogCall | None = None,
+) -> list[ChannelResult]:
+    """List every channel's window. One failing channel never stops the sweep: its window falls back
+    to the cache (when `cache_dir` is given) and its result carries the error."""
+    wait = youtube.pacer(pace_seconds, sleep)
+
+    def logged(kind: str, item_id: str, call: Callable, outcome: Callable):
+        wait()
+        started = time.monotonic()
+        result = call()
+        if log:
+            log(kind, item_id, time.monotonic() - started, outcome(result))
+        return result
+
+    def video_time(video_id: str):
+        return logged("video_time", video_id, lambda: youtube.video_time(video_id),
+                      lambda r: "ok" if r[0] else "failed")
+
+    results = []
+    for name, channel_id in channels:
+        try:
+            listing = logged("listing", channel_id,
+                             lambda: list_channel_videos(channel_id, cutoff=cutoff, until=until, video_time=video_time),
+                             lambda r: "ok")
+        except Exception as e:
+            if log:
+                log("listing", channel_id, 0.0, "failed")
+            rows = cache_mod.all_in_window(channel_id, cutoff.day_str, cache_dir, until) if cache_dir else []
+            results.append(ChannelResult(name, channel_id, rows, reached_cutoff=False, error=str(e)))
+            continue
+        if cache_dir:
+            cache_mod.merge(channel_id, listing.rows, cache_dir)
+        results.append(ChannelResult(name, channel_id, _newest_first(listing.rows), listing.reached_cutoff))
+    return results
+
+
+def window_urls(results: list[ChannelResult]) -> list[str]:
+    return [youtube.watch_url(row["video_id"]) for r in results for row in r.rows]
+
+
+def check(results: list[ChannelResult]) -> tuple[str, list[str]]:
+    """(stage status, gate lines): failed when a channel's fetch failed or its listing ended before the window."""
+    problems = []
+    for r in results:
+        if r.error:
+            problems.append(f"❌ {r.name}: fetch failed — {r.error} (kept {len(r.rows)} cached videos in window)")
+        elif not r.reached_cutoff:
+            problems.append(f"❌ {r.name}: listing ended before the window start")
+    total = sum(len(r.rows) for r in results)
+    summary = (f"Channels: {len(results)} channels · {total} videos · {len(problems)} failed "
+               f"[{'FAIL' if problems else 'OK'}]")
+    return ("failed" if problems else "done"), [summary, *problems]

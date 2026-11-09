@@ -42,3 +42,20 @@ def test_all_in_window_filters_by_cutoff(tmp_path):
 
 def test_load_missing_returns_empty(tmp_path):
     assert cache_mod.load("nope", str(tmp_path)) == {}
+
+
+def test_a_video_checked_row_replaces_a_listing_row(tmp_path):
+    cache_mod.merge(CID, [_row("a", "20261106")], str(tmp_path))  # no date_source: reads as listing
+    checked = {**_row("a", "20261105"), "date_source": "video"}
+    assert cache_mod.merge(CID, [checked], str(tmp_path)) == (0, 1)
+    assert cache_mod.load(CID, str(tmp_path))["a"]["upload_date"] == "20261105"
+
+    # A later listing row does not undo the check.
+    cache_mod.merge(CID, [{**_row("a", "20261106"), "date_source": "listing"}], str(tmp_path))
+    assert cache_mod.load(CID, str(tmp_path))["a"]["date_source"] == "video"
+
+
+def test_all_in_window_caps_at_until(tmp_path):
+    cache_mod.merge(CID, [_row("a", "20260601"), _row("b", "20260610"), _row("c", "20260615")], str(tmp_path))
+    window = cache_mod.all_in_window(CID, "20260601", str(tmp_path), until="20260610")
+    assert [r["video_id"] for r in window] == ["b", "a"]

@@ -79,5 +79,22 @@ def test_early_stop_on_cutoff():
 
 def test_cutoff_day_is_kept_and_the_day_before_is_not():
     lines = ["a\t20260617\tAfter", "b\t20260616\tOn the cutoff day", "c\t20260615\tDay before"]
-    rows = list_channel_videos(CID, cutoff=date(2026, 6, 16), _lines=iter(lines))
+    rows = list_channel_videos(CID, cutoff=date(2026, 6, 16), _lines=iter(lines),
+                               _real_date={"b": "20260616"}.get)
     assert [r["video_id"] for r in rows] == ["a", "b"]
+
+
+def test_cutoff_day_row_is_checked_against_its_real_date():
+    # The listing dates are the real date or a day late: a row on the cutoff day may be from the day before.
+    lines = ["a\t20260617\tAfter", "b\t20260616\tReally the day before", "c\t20260616\tReally on the day",
+             "d\t20260616\tDate unreadable", "e\t20260615\tBefore"]
+    asked = []
+
+    def real_date(video_id):
+        asked.append(video_id)
+        return {"b": "20260615", "c": "20260616"}.get(video_id)
+
+    rows = list_channel_videos(CID, cutoff=date(2026, 6, 16), _lines=iter(lines), _real_date=real_date)
+    assert [r["video_id"] for r in rows] == ["a", "c", "d"]
+    assert asked == ["b", "c", "d"]  # only cutoff-day rows cost a per-video fetch
+    assert rows[2]["date_verified"] is False and "date_verified" not in rows[1]

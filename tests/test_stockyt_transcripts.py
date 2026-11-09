@@ -67,7 +67,7 @@ def test_whisper_failure_gives_error_record(fake_youtube):
     fake_youtube["whisper"] = ReachError("NEED_SETUP", "no Whisper API key configured")
     record = fetch_record(URL)
     assert record["status"] == "error"
-    assert record["error"] == "no Whisper API key configured"
+    assert record["error"] == "captions: no subtitles; whisper: no Whisper API key configured"
     assert record["channel"] == "Some Channel"  # channel rides along on error records
 
 

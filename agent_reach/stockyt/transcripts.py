@@ -57,17 +57,22 @@ def _transcript(youtube: YouTubeChannel, url: str, lang: str, allow_whisper: boo
     """(text, source): captions first, then Whisper when allowed. Raises on total failure."""
     try:
         text = youtube._ytdlp_subtitle(target=url, lang=lang, timeout=timeout)[0].get("text")
-    except Exception:
+        caption_error = "no transcript available"
+    except Exception as e:
         if not allow_whisper:
             raise
-        text = None
+        text, caption_error = None, str(e)
     if text:
         return " ".join(text.splitlines()), "subtitles"
     if not allow_whisper:
-        raise RuntimeError("no transcript available")
-    text = youtube._whisper_transcribe(target=url, timeout=timeout)[0].get("text")
+        raise RuntimeError(caption_error)
+    try:
+        text = youtube._whisper_transcribe(target=url, timeout=timeout)[0].get("text")
+    except Exception as e:
+        # Report both: the caption error is usually the real cause (e.g. a YouTube rate limit).
+        raise RuntimeError(f"captions: {caption_error}; whisper: {e}") from None
     if not text:
-        raise RuntimeError("no transcript available")
+        raise RuntimeError(f"captions: {caption_error}; whisper: no text")
     return text, "whisper"
 
 

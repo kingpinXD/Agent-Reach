@@ -12,7 +12,7 @@ without fetching each video page:
 from __future__ import annotations
 
 import subprocess
-from collections.abc import Iterable, Iterator, Mapping
+from collections.abc import Callable, Iterable, Iterator, Mapping
 from datetime import date
 
 from agent_reach.channels.youtube import _ytdlp_argv
@@ -90,12 +90,25 @@ def _parse_line(line: str, channel_id: str) -> dict | None:
     }
 
 
+def _real_upload_date(video_id: str) -> str | None:
+    """The video's own upload_date (YYYYMMDD) from its watch page, or None if it can't be read."""
+    cmd = _ytdlp_argv("--skip-download", "--print", "%(upload_date)s",
+                      f"https://www.youtube.com/watch?v={video_id}")
+    try:
+        out = subprocess.run(cmd, capture_output=True, encoding="utf-8", errors="replace",
+                             env=utf8_subprocess_env(), timeout=120).stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return out if len(out) == 8 and out.isdigit() else None
+
+
 def list_channel_videos(
     channel_id: str,
     *,
     cutoff: date,
     cache: Mapping[str, dict] | None = None,
     _lines: Iterable[str] | None = None,
+    _real_date: Callable[[str], str | None] = _real_upload_date,
 ) -> list[dict]:
     """Uploads for a channel on or after `cutoff`, newest-first.
 
@@ -108,8 +121,15 @@ def list_channel_videos(
     <= cutoff). Otherwise a grown window (cache seeded from a smaller window) would
     stop at the first cached id and never back-fill the older in-window videos.
 
-    Bad lines (missing/`NA` date) are skipped, never fatal. `_lines` overrides
-    the yt-dlp call for tests.
+    CUTOFF DAY: the flat listing's approximate date is the real upload date or one
+    day later, never earlier (checked against per-video dates, 2026-11-08). So a row
+    dated after the cutoff is in the window and a row dated before it is out, but a
+    row dated exactly on the cutoff may really be from the day before. Those rows get
+    their real date from `_real_date`; one that can't be read is kept and marked
+    `date_verified: False`.
+
+    Bad lines (missing/`NA` date) are skipped, never fatal. `_lines` and `_real_date`
+    override the yt-dlp calls for tests.
     """
     cutoff_str = cutoff.strftime("%Y%m%d")
 
@@ -134,6 +154,14 @@ def list_channel_videos(
             break
         if cache_reaches_cutoff and row["video_id"] in cache:
             break
+        if row["upload_date"] == cutoff_str:
+            real = _real_date(row["video_id"])
+            if real is None:
+                row["date_verified"] = False
+            elif real < cutoff_str:
+                continue
+            else:
+                row["upload_date"] = real
         rows.append(row)
 
     if not parsed_any and _lines is None:

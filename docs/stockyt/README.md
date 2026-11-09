@@ -88,7 +88,7 @@ program does not know is an error.
 |---|---|---|
 | `output_dir` | `~/Documents/Claude/Cowork Projects/YoutubeSummaries` | Runs and the channel cache live here |
 | `timezone` | `America/New_York` | How a `--since` time of day is read |
-| `channels` | the 7 channels in `config.py` | List of `["Name", "channel id"]` pairs |
+| `channels` | the 11 channels in `config.py` | List of `["Name", "channel id"]` pairs |
 | `lang` | `en` | Caption language. `<lang>-orig` is preferred over `<lang>` |
 | `whisper` | `false` | Fall back to Whisper speech-to-text for a video with no captions |
 | `pace_seconds` | `5.0` | Pause between yt-dlp calls |

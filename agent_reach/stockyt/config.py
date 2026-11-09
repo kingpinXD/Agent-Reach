@@ -21,6 +21,10 @@ CHANNELS: list[tuple[str, str]] = [
     ("Joseph Carlson", "UCbta0n8i6Rljh0obO7HzG9A"),
     ("Ticker Symbol: YOU", "UC7kCeZ53sli_9XwuQeFxLqw"),
     ("Stock Moe", "UCoMzWLaPjDJBbipihD694pQ"),
+    ("Ricky Gutierrez", "UCtlAFoYl2aWb6pMiHCctQHA"),
+    ("Adam Khoo", "UCK-aOjEvZNJl3HINja0gAiQ"),
+    ("New Money", "UCvSXMi2LebwJEM1s4bz5IBA"),
+    ("ZipTrader", "UC0BGhWsIbV7Dm-lsvhdlMbA"),
 ]
 
 _NAME_BY_ID = {channel_id: name for name, channel_id in CHANNELS}

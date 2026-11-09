@@ -1,6 +1,6 @@
 ---
 name: yt-tickers
-description: Extract stock/crypto tickers from a corpus of YouTube transcripts (JSONL) in parallel via a team of subagents, then grade them into ranked Bullish/Bearish leaderboards using cross-author consensus. Auto-triggers when user says 'ticker extract', 'extract tickers', 'grade tickers', 'which stocks are they talking about', 'ticker leaderboard', or similar, pointed at a transcripts file. Arguments: Path to a transcripts JSONL (default ~/Downloads/YoutubeSummaries/transcripts.jsonl). Optional: '--concurrency <n>' (default 30), '-o <dir>' output dir, '--top <n>' leaderboard size.
+description: Extract stock/crypto tickers from a corpus of YouTube transcripts (JSONL) in parallel via a team of subagents, then grade them into ranked Bullish/Bearish leaderboards using cross-author consensus. Auto-triggers when user says 'ticker extract', 'extract tickers', 'grade tickers', 'which stocks are they talking about', 'ticker leaderboard', or similar, pointed at a transcripts file. Arguments: Path to a transcripts JSONL (default: the newest transcripts-*.jsonl in "$HOME/Documents/Claude/Cowork Projects/YoutubeSummaries"). Optional: '--concurrency <n>' (default 30), '-o <dir>' output dir, '--top <n>' leaderboard size.
 allowed-tools: Bash, Read, Write, Grep, Glob, Agent, Task
 ---
 
@@ -14,18 +14,18 @@ Tickers appear in transcripts as **spoken company names**, not `$SYMBOL` (verifi
 
 ## Config
 ```
-INPUT:        ~/Downloads/YoutubeSummaries/transcripts.jsonl   (--input / first positional)
+INPUT:        "$HOME/Documents/Claude/Cowork Projects/YoutubeSummaries/transcripts-<timestamp>.jsonl"   (--input / first positional; default the newest one)
 CONCURRENCY:  30        (--concurrency)
-OUTPUT DIR:   ~/Downloads/YoutubeSummaries/                    (-o)
+OUTPUT DIR:   "$HOME/Documents/Claude/Cowork Projects/YoutubeSummaries/"   (-o; keep it quoted: the name has a space)
 RUN DIR:      /tmp/ticker-run-<timestamp>/                     (chunks + per-agent extract files)
 TOP:          25        (--top: how many rows to show per leaderboard)
 ```
 
-## Step 1: Split the corpus (app — `agent-reach split-corpus`)
+## Step 1: Split the corpus (app — `agent-reach stockyt split-corpus`)
 
 Don't hand-roll this — the app does it (tested). Pick a fresh `RUN_DIR=/tmp/ticker-run-<timestamp>`, then:
 ```bash
-agent-reach split-corpus --input <INPUT.jsonl> --out-dir <RUN_DIR> --chunks <CONCURRENCY>
+agent-reach stockyt split-corpus --input "<INPUT.jsonl>" --out-dir <RUN_DIR> --chunks <CONCURRENCY>
 ```
 It keeps `status=="ok"` records with a non-empty transcript, writes `<RUN_DIR>/authors.json` (`total_authors`, `videos_per_author` — the normalization denominator — and `N`), and splits into `chunk_01.jsonl … chunk_<A>.jsonl` (`A = min(--chunks, N)`, full records per chunk). Surface its printed `N` / authors / chunk count to the user.
 
@@ -97,7 +97,7 @@ On `Review: FAIL` it lists each problem (a finding with no response, a rejected 
 
 The app does grading, the integrity check, AND the markdown render — one call, no ad-hoc scripts:
 ```bash
-agent-reach stockyt grade --reviewed --extract-dir <RUN_DIR> --authors <RUN_DIR>/authors.json -o ~/Downloads/YoutubeSummaries/tickers-<timestamp>.json
+agent-reach stockyt grade --reviewed --extract-dir <RUN_DIR> --authors <RUN_DIR>/authors.json -o "$HOME/Documents/Claude/Cowork Projects/YoutubeSummaries/tickers-<timestamp>.json"
 ```
 With `--reviewed` it grades `reviewed_*.jsonl` (refusing if `review_summary.json` is not OK or any `extract_NN.jsonl` has no `reviewed_NN.jsonl`), leaves out dropped and disputed rows, and adds a review line and a `Disputed` column to the markdown. It loads every reviewed row + `authors.json`, applies the formula below, and writes **three things**: the graded `.json`, a sibling `.md` leaderboard (same path, `.md` extension), and a printed+embedded **Integrity** line (`corpus N / covered / with_tickers / missing [OK|FAIL]`) reconciled against the `chunk_*.jsonl` it finds in `RUN_DIR`. Do NOT re-implement grading, integrity, or the markdown in an inline script — the formula is documented here only so the ranking is auditable:
 
@@ -141,6 +141,6 @@ The `.json` and `.md` are already written by Step 6. Read the `.json` and presen
 - Offer next: deeper dive on a ticker (pull its quotes across videos), per-channel breakdown, or re-grade with different weights.
 
 ## Notes
-- Output (leaderboards + graded JSON) → `~/Downloads/YoutubeSummaries/`. Chunks + per-agent extract files stay in the `/tmp/` run dir.
+- Output (leaderboards + graded JSON) → "$HOME/Documents/Claude/Cowork Projects/YoutubeSummaries/". Chunks + per-agent extract files stay in the `/tmp/` run dir.
 - Extraction and the review are the only LLM steps; review outcomes and grading are deterministic, so re-running the grade with tweaked weights is cheap (reuse `reviewed_*.jsonl`, skip Steps 3–5).
 - Pairs with `/yt-transcripts` (which produces the input JSONL). Recency weighting is intentionally out of v1 (needs upload_date, not currently stored).

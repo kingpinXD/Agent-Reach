@@ -6,7 +6,7 @@ allowed-tools: Bash, Read, Write, Grep, Glob, Agent, Task
 
 # YouTube Transcripts (parallel): $ARGUMENTS
 
-You are the **orchestrator**. Split the link list across a team of subagents that each fetch a slice in parallel, then compile their outputs into one JSONL, verify nothing was lost, and report. The heavy lifting per link is done by the `agent-reach youtube` engine (local fork at `/Users/tanmay/IdeaProjects/kingpinXD/Agent-Reach`, installed editable as `agent-reach`).
+You are the **orchestrator**. Split the link list across a team of subagents that each fetch a slice in parallel, then compile their outputs into one JSONL, verify nothing was lost, and report. The heavy lifting per link is done by `agent-reach stockyt transcripts` (personal fork `kingpinXD/Agent-Reach`). It fetches captions (manual or auto, one call) and falls back to Whisper only when enabled.
 
 Each link's record (transcript-only, keyed by url+video_id):
 ```json
@@ -19,7 +19,7 @@ Each link's record (transcript-only, keyed by url+video_id):
 CONCURRENCY:   30          # target number of parallel subagents (override with --concurrency)
 WHISPER:       off         # default captions only (manual or auto); --whisper enables fallback (needs ffmpeg + Groq key)
 LANG:          en          # --lang to change
-OUTPUT DIR:    ~/Downloads/YoutubeSummaries/        # final compiled JSONL
+OUTPUT DIR:    "$HOME/Documents/Claude/Cowork Projects/YoutubeSummaries/"   # final compiled JSONL (keep it quoted: the name has a space)
 RUN DIR:       /tmp/yt-run-<timestamp>/             # canonical link list + per-agent batch files (intermediate)
 ```
 
@@ -48,7 +48,7 @@ Spawn **all `A` subagents in ONE message** (multiple Agent tool calls in one tur
 Each subagent prompt must contain its `batch_NN.txt` path, its `batch_NN.jsonl` output path, and these instructions:
 
 > You fetch YouTube transcripts for one batch. Run EXACTLY:
-> `cd /Users/tanmay/IdeaProjects/kingpinXD/Agent-Reach && agent-reach youtube --file <batch_NN.txt> -o <batch_NN.jsonl> --lang <LANG> [--no-whisper unless WHISPER on]`
+> `agent-reach stockyt transcripts --file <batch_NN.txt> -o <batch_NN.jsonl> --lang <LANG> [--no-whisper unless WHISPER on]`
 > Then read your own `<batch_NN.jsonl>`. Return ONLY a compact JSON object (no prose):
 > `{"batch":NN,"attempted":<count of input links>,"ok":<count status=ok>,"skipped":[{"video_id":…,"url":…,"reason":<error string>} …],"output_file":"<path>","line_count":<lines written>}`
 > Do not summarize transcripts, do not do anything else. If the command errors out entirely, still return the JSON with whatever you have and an `"agent_error":"<msg>"` field.
@@ -59,7 +59,7 @@ Gather every subagent's JSON. A batch is **dead** if its agent returned null/cra
 
 ## Step 5: Compile
 
-Concatenate `batch_01.jsonl … batch_<A>.jsonl` (in order) into the final output: the user's `-o` path, else `~/Downloads/YoutubeSummaries/transcripts-<timestamp>.jsonl` (mkdir -p first). Each batch file already holds both ok and error rows.
+Concatenate `batch_01.jsonl … batch_<A>.jsonl` (in order) into the final output: the user's `-o` path, else "$HOME/Documents/Claude/Cowork Projects/YoutubeSummaries/transcripts-<timestamp>.jsonl" (mkdir -p first, quoted). Each batch file already holds both ok and error rows.
 
 ## Step 6: Verify (count integrity — this is mandatory)
 
@@ -83,7 +83,7 @@ Report concisely:
 Then offer next steps (per-video summaries, combined digest, per-channel split) — but only if the user hasn't already said what they want.
 
 ## Notes
-- Output (JSONL + any summaries) goes in `~/Downloads/YoutubeSummaries/`. Per-agent batch files and raw VTT/audio stay in `/tmp/` (the run dir), never in a project workspace.
+- Output (JSONL + any summaries) goes in "$HOME/Documents/Claude/Cowork Projects/YoutubeSummaries/". Per-agent batch files and raw VTT/audio stay in `/tmp/` (the run dir), never in a project workspace.
 - JSONL is append-as-you-go inside each batch, so a crash mid-batch keeps that batch's completed records — re-running only needs the unrecovered links.
 - `--whisper` makes no-subtitle videos fall back to transcription (slower, needs ffmpeg + `agent-reach configure groq-key gsk_…`). Default off means no-caption videos come back as `skipped` error rows.
-- This is a personal-fork command; engine behavior tracks `/Users/tanmay/IdeaProjects/kingpinXD/Agent-Reach`.
+- This is a personal-fork command; engine behavior tracks the `agent-reach` build on PATH (it must have `agent-reach stockyt`).

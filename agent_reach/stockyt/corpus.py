@@ -9,11 +9,10 @@ contiguous chunk_*.jsonl files, each about `chunk_chars` of transcript, for tick
 from __future__ import annotations
 
 import glob
-import json
 import os
 from collections import Counter
 
-from agent_reach.stockyt.run import atomic_write_json, atomic_write_text
+from agent_reach.stockyt.run import atomic_write_json, atomic_write_jsonl
 
 
 def _kept(records: list[dict]) -> list[dict]:
@@ -67,8 +66,7 @@ def split_corpus(records: list[dict], out_dir: str, chunk_chars: int) -> tuple[d
 
     chunks = chunk_records(kept, chunk_chars)
     for idx, chunk in enumerate(chunks, 1):
-        atomic_write_text(os.path.join(out_dir, f"chunk_{idx:02d}.jsonl"),
-                          "".join(json.dumps(row, ensure_ascii=False) + "\n" for row in chunk))
+        atomic_write_jsonl(os.path.join(out_dir, f"chunk_{idx:02d}.jsonl"), chunk)
     written = {f"chunk_{idx:02d}.jsonl" for idx in range(1, len(chunks) + 1)}
     for path in glob.glob(os.path.join(out_dir, "chunk_*.jsonl")):
         if os.path.basename(path) not in written:

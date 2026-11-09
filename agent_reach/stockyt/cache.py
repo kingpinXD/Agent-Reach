@@ -15,7 +15,7 @@ from __future__ import annotations
 import json
 import os
 
-from agent_reach.stockyt.run import atomic_write_text
+from agent_reach.stockyt.run import atomic_write_jsonl
 
 
 def _cache_file(channel_id: str, cache_dir: str) -> str:
@@ -54,8 +54,7 @@ def merge(channel_id: str, new_rows: list[dict], cache_dir: str) -> tuple[int, i
         merged[row["video_id"]] = row
 
     ordered = sorted(merged.values(), key=lambda r: r["upload_date"], reverse=True)
-    atomic_write_text(_cache_file(channel_id, cache_dir),
-                      "".join(json.dumps(row, ensure_ascii=False) + "\n" for row in ordered))
+    atomic_write_jsonl(_cache_file(channel_id, cache_dir), ordered)
     return added, len(ordered)
 
 

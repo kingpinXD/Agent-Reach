@@ -24,6 +24,7 @@ import os
 import re
 
 from agent_reach.stockyt.grading import _normalize_ticker
+from agent_reach.stockyt.run import read_json, read_jsonl
 
 ISSUES = ("wrong_ticker", "wrong_sentiment", "not_discussed", "not_investable", "missed_ticker")
 _RANK = {"confirmed": 0, "corrected": 1, "added": 2, "disputed": 3, "dropped": 4}
@@ -152,14 +153,10 @@ def apply_review(extract_rows: list[dict], r1: list[dict], resp1: list[dict], r2
     return rows, problems, disputed_missed
 
 
-def _load_json(path: str):
-    with open(path, encoding="utf-8") as f:
-        return json.load(f)
-
-
-def _load_jsonl(path: str) -> list[dict]:
-    with open(path, encoding="utf-8") as f:
-        return [json.loads(line) for line in f if line.strip()]
+def chunk_files(nn: str) -> list[str]:
+    """Chunk NN's extract file, then its four review files in apply_review's order."""
+    return [f"extract_{nn}.jsonl", f"review_{nn}_r1.json", f"response_{nn}_r1.json",
+            f"review_{nn}_r2.json", f"response_{nn}_r2.json"]
 
 
 def review_run(run_dir: str) -> dict:
@@ -177,16 +174,15 @@ def review_run(run_dir: str) -> dict:
 
     for chunk_path in chunk_paths:
         nn = re.fullmatch(r"chunk_(\d+)\.jsonl", os.path.basename(chunk_path)).group(1)
-        names = [f"extract_{nn}.jsonl", f"review_{nn}_r1.json", f"response_{nn}_r1.json",
-                 f"review_{nn}_r2.json", f"response_{nn}_r2.json"]
+        names = chunk_files(nn)
         paths = [os.path.join(run_dir, name) for name in names]
         missing = [name for name, path in zip(names, paths) if not os.path.exists(path)]
         if missing:
             counts["problems"].append(f"chunk {nn}: missing {', '.join(missing)}")
             continue
         try:
-            extract = _load_jsonl(paths[0])
-            r1, resp1, r2, resp2 = (_load_json(p) for p in paths[1:])
+            extract = read_jsonl(paths[0])
+            r1, resp1, r2, resp2 = (read_json(p) for p in paths[1:])
         except (json.JSONDecodeError, UnicodeDecodeError) as e:
             counts["problems"].append(f"chunk {nn}: unreadable file — {e}")
             continue
@@ -211,3 +207,24 @@ def review_run(run_dir: str) -> dict:
     with open(os.path.join(run_dir, "review_summary.json"), "w", encoding="utf-8") as f:
         json.dump(counts, f, ensure_ascii=False, indent=2)
     return counts
+
+
+def reviewed_rows(run_dir: str) -> tuple[list[dict], dict]:
+    """Rows of every reviewed_NN.jsonl plus the review counts; raises ValueError if the review is incomplete."""
+    summary_path = os.path.join(run_dir, "review_summary.json")
+    if not os.path.exists(summary_path):
+        raise ValueError("no review_summary.json — run `agent-reach stockyt review-apply` first")
+    summary = read_json(summary_path)
+    if not summary.get("ok"):
+        raise ValueError("review_summary.json says the review is not ok — fix it and re-run review-apply")
+    rows = []
+    missing = []
+    for extract_path in sorted(glob.glob(os.path.join(run_dir, "extract_*.jsonl"))):
+        reviewed_path = os.path.join(run_dir, os.path.basename(extract_path).replace("extract_", "reviewed_", 1))
+        if not os.path.exists(reviewed_path):
+            missing.append(os.path.basename(reviewed_path))
+            continue
+        rows.extend(read_jsonl(reviewed_path))
+    if missing:
+        raise ValueError(f"missing {', '.join(missing)}")
+    return rows, summary

@@ -225,3 +225,83 @@ def test_split_corpus_sizes_chunks_by_characters(tmp_path, capsys):
     assert main(["split-corpus", "--input", str(corpus), "--out-dir", str(out_dir), "--chunk-chars", "20"]) == 0
     assert sorted(p.name for p in out_dir.iterdir()) == ["authors.json", "chunk_01.jsonl", "chunk_02.jsonl"]
     assert "Kept 3 ok records (one per video)" in capsys.readouterr().out
+
+
+# ── run / status / regrade / doctor ──
+
+@pytest.fixture
+def doctor_ok(monkeypatch):
+    from agent_reach.stockyt import pipeline
+
+    monkeypatch.setattr(pipeline, "doctor", lambda settings, backend: [(True, "fine")])
+
+
+@pytest.mark.parametrize("argv, message", [
+    (["run", "--resume", "x", "--since", "20261105"], "drop --since, --until and --label"),
+    (["run", "--since", "20261105"], "needs --since and --label"),
+    (["run", "--label", "x"], "needs --since and --label"),
+    (["run", "--since", "20261105", "--label", "x", "--retry-failed"], "--retry-failed only goes with --resume"),
+])
+def test_run_rejects_a_bad_argument_mix(argv, message, capsys, doctor_ok):
+    assert main(argv) == 1
+    assert message in capsys.readouterr().err
+
+
+def test_run_exits_1_on_a_doctor_fail_before_creating_the_run(tmp_path, monkeypatch, capsys):
+    from agent_reach.stockyt import pipeline
+
+    monkeypatch.setattr(pipeline, "doctor", lambda settings, backend: [(True, "a"), (False, "yt-dlp: missing")])
+    assert main(["run", "--since", "20261105", "--label", "x", "--llm", "fake"]) == 1
+    captured = capsys.readouterr()
+    assert "[FAIL] yt-dlp: missing" in captured.out and "Fix the FAIL lines" in captured.err
+    assert not (tmp_path / "out" / "runs" / "x").exists()
+
+
+def test_run_refuses_an_existing_label_and_a_missing_resume(tmp_path, capsys, doctor_ok):
+    from agent_reach.stockyt import run as run_mod
+
+    run_mod.create(str(tmp_path / "out"), "x", {"since": "20261105", "llm": "fake"}, {})
+    assert main(["run", "--since", "20261105", "--label", "x"]) == 1
+    assert "already exists" in capsys.readouterr().err
+    assert main(["run", "--resume", "nope"]) == 1
+    assert "no run 'nope'" in capsys.readouterr().err
+
+
+def test_status_prints_each_stage_and_the_waiting_prompts(tmp_path, capsys):
+    from agent_reach.stockyt import pipeline
+    from agent_reach.stockyt import run as run_mod
+
+    run = run_mod.create(str(tmp_path / "out"), "x", {"since": "20261105", "until": None, "llm": "session",
+                                                      "cookies_from_browser": "chrome"}, {})
+    run_mod.finish_stage(run, "channels", "done", ["Channels: 1 channels · 2 videos · 0 failed [OK]"], "h")
+    run_mod.finish_stage(run, "extract", "waiting", ["Extract: 0/2 videos [FAIL]"], "h")
+    run_mod.atomic_write_text(f"{pipeline.session_dir(run)}/extract_01.prompt.md", "p")
+
+    assert main(["status", "x"]) == 0
+    out = capsys.readouterr().out
+    assert "Window: since 20261105 · LLM session · cookies chrome" in out
+    assert "[channels] done · attempts 0\n  Channels: 1 channels · 2 videos · 0 failed [OK]" in out
+    assert "[transcripts] pending · attempts 0" in out
+    assert f"waiting: {pipeline.session_dir(run)}/extract_01.prompt.md" in out
+
+
+def test_regrade_needs_a_finished_review(tmp_path, capsys):
+    from agent_reach.stockyt import run as run_mod
+
+    run_mod.create(str(tmp_path / "out"), "x", {"since": "20261105", "llm": "fake"}, {})
+    assert main(["regrade", "x"]) == 1
+    assert "no finished review yet" in capsys.readouterr().err
+
+
+def test_doctor_exits_1_on_any_fail(monkeypatch, capsys):
+    from agent_reach.stockyt import pipeline
+
+    monkeypatch.setattr(pipeline, "doctor", lambda settings, backend: [(True, "a"), (None, "cache: none yet")])
+    assert main(["doctor"]) == 0
+    monkeypatch.setattr(pipeline, "doctor", lambda settings, backend: [(False, "JS runtime: none")])
+    assert main(["doctor", "--llm", "session"]) == 1
+    assert "[FAIL] JS runtime: none" in capsys.readouterr().out
+
+
+def test_help_lists_run():
+    assert "finance-YouTube pipeline (run, status, regrade, doctor;" in runtime_cli.HELP

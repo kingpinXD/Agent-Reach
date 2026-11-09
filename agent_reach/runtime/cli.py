@@ -51,7 +51,7 @@ For agents:
   agent-reach channels                    list channels, actions, params
   agent-reach <channel> <action> [args]   e.g. agent-reach bilibili search python
   agent-reach read <url>                  read a link with the matching channel
-  agent-reach stockyt <command>           finance-YouTube pipeline (channels, transcripts, split-corpus, review-apply, grade)
+  agent-reach stockyt <command>           finance-YouTube pipeline (run, status, regrade, doctor; steps: channels, transcripts, split-corpus, review-apply, grade)
   Search/read try declared public web routes first; --backend selects a site tool
   --backend public-web                  public access only; no browser fallback
 

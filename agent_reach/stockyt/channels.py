@@ -16,8 +16,7 @@ from zoneinfo import ZoneInfo
 
 from agent_reach.stockyt import cache as cache_mod
 from agent_reach.stockyt import youtube
-
-LogCall = Callable[[str, str, float, str], None]
+from agent_reach.stockyt.run import LogCall
 
 
 @dataclass(frozen=True)

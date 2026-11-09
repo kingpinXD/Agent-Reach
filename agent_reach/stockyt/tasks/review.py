@@ -115,6 +115,8 @@ FINDING_FIELDS = "\n".join([
     "- `quote` is **required**: verbatim words from the transcript that support the finding.",
 ])
 
+EMPTY_R2 = {"verdicts": [], "findings": []}
+
 _F_ID = re.compile(r"f\d+")
 _R2_ID = re.compile(r"r2-\d+")
 
@@ -186,7 +188,7 @@ def r2_review_prompt(records: list[dict], rows_after_r1: list[dict], r1: list[di
 
 def rows_after_r1(extract_rows: list[dict], r1: list[dict], resp1: list[dict]) -> list[dict]:
     """The extract rows with the accepted R1 findings applied, as R2 sees them."""
-    rows, _, _ = apply_review(extract_rows, r1, resp1, {"verdicts": [], "findings": []}, [])
+    rows, _, _ = apply_review(extract_rows, r1, resp1, EMPTY_R2, [])
     return rows
 
 

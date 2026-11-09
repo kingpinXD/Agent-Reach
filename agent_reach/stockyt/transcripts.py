@@ -20,9 +20,7 @@ from urllib.parse import parse_qs, urlparse
 
 from agent_reach.stockyt import youtube
 from agent_reach.stockyt.config import Settings, name_for_id
-from agent_reach.stockyt.run import atomic_write_text
-
-LogCall = Callable[[str, str, float, str], None]
+from agent_reach.stockyt.run import LogCall, atomic_write_jsonl
 
 
 def extract_video_id(url: str) -> str | None:
@@ -165,7 +163,7 @@ def fetch_all(
 
     link_keys = [_link_key(url) for url in links]
     final = [rows.pop(k) for k in link_keys if k in rows] + list(rows.values())  # rows of other links last
-    atomic_write_text(out_path, "".join(json.dumps(r, ensure_ascii=False) + "\n" for r in final))
+    atomic_write_jsonl(out_path, final)
     return final
 
 

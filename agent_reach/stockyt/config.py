@@ -75,6 +75,11 @@ class Settings:
         """Plain-JSON copy for run.json."""
         return asdict(self)
 
+    @classmethod
+    def from_snapshot(cls, values: dict) -> "Settings":
+        """Settings back from a run.json snapshot."""
+        return _settings(dict(values), "run.json config_snapshot")
+
 
 def _known(cls, values: dict, where: str) -> dict:
     unknown = set(values) - {f.name for f in fields(cls)}
@@ -99,9 +104,13 @@ def load_settings(path: str | None = None) -> Settings:
     except FileNotFoundError:
         return Settings()
 
-    values = dict(_known(Settings, values, path))
+    return _settings(values, path)
+
+
+def _settings(values: dict, where: str) -> Settings:
+    values = dict(_known(Settings, values, where))
     if "weights" in values:
-        values["weights"] = Weights(**_known(Weights, values["weights"], f"{path} [weights]"))
+        values["weights"] = Weights(**_known(Weights, values["weights"], f"{where} [weights]"))
     if "channels" in values:
         values["channels"] = [(name, channel_id) for name, channel_id in values["channels"]]
     if "output_dir" in values:

@@ -3,10 +3,9 @@
 
 from __future__ import annotations
 
-import json
 import os
 
-from agent_reach.stockyt.run import atomic_write_json
+from agent_reach.stockyt.run import atomic_write_json, read_json
 
 
 def _path(cache_dir: str, key: str) -> str:
@@ -15,10 +14,7 @@ def _path(cache_dir: str, key: str) -> str:
 
 def load(cache_dir: str, key: str) -> dict | None:
     path = _path(cache_dir, key)
-    if not os.path.exists(path):
-        return None
-    with open(path, encoding="utf-8") as f:
-        return json.load(f)
+    return read_json(path) if os.path.exists(path) else None
 
 
 def save(cache_dir: str, key: str, answer: dict) -> None:

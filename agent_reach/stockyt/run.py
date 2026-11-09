@@ -12,7 +12,7 @@ import json
 import os
 import re
 import tempfile
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -63,6 +63,20 @@ def atomic_write_json(path: str, obj) -> None:
     atomic_write_text(path, json.dumps(obj, ensure_ascii=False, indent=2) + "\n")
 
 
+def atomic_write_jsonl(path: str, rows: list[dict]) -> None:
+    atomic_write_text(path, "".join(json.dumps(row, ensure_ascii=False) + "\n" for row in rows))
+
+
+def read_json(path: str):
+    with open(path, encoding="utf-8") as f:
+        return json.load(f)
+
+
+def read_jsonl(path: str) -> list[dict]:
+    with open(path, encoding="utf-8") as f:
+        return [json.loads(line) for line in f if line.strip()]
+
+
 def run_dir(output_dir: str, label: str) -> str:
     if not _LABEL_RE.match(label):
         raise ValueError(f"run label {label!r} may use only letters, digits, '.', '_' and '-'")
@@ -88,8 +102,7 @@ def create(output_dir: str, label: str, params: dict, config_snapshot: dict) -> 
 def open_run(output_dir: str, label: str) -> Run:
     path = run_dir(output_dir, label)
     try:
-        with open(os.path.join(path, "run.json"), encoding="utf-8") as f:
-            return Run(path, json.load(f))
+        return Run(path, read_json(os.path.join(path, "run.json")))
     except FileNotFoundError:
         raise FileNotFoundError(f"no run {label!r} at {path}") from None
 
@@ -119,6 +132,9 @@ def finish_stage(run: Run, name: str, status: str, gate_lines: list[str], input_
         raise ValueError(f"unknown stage status {status!r}")
     stage(run, name).update(status=status, gate_lines=list(gate_lines), input_hash=input_hash, finished_at=_now())
     save(run)
+
+
+LogCall = Callable[[str, str, float, str], None]
 
 
 def log(run: Run, kind: str, item_id: str, duration: float, outcome: str) -> None:

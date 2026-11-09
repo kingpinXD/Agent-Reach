@@ -1,8 +1,10 @@
 # -*- coding: utf-8 -*-
 """`agent-reach stockyt <command>` — the finance-YouTube pipeline commands.
 
-channels → transcripts → split-corpus → (LLM extraction) → grade. Prose output for
-humans and skills, not the JSON envelope the rest of agent-reach prints.
+`run` runs the whole pipeline in a run folder (`pipeline.py`); `status`, `regrade` and `doctor`
+sit beside it. The single-step commands (channels, transcripts, split-corpus, review-apply,
+grade) still work on their own files. Prose output for humans and skills, not the JSON
+envelope the rest of agent-reach prints.
 """
 
 from __future__ import annotations
@@ -15,7 +17,7 @@ import sys
 from collections.abc import Sequence
 from datetime import date, datetime, timedelta
 
-_EXIT_CODES = {"done": 0, "failed": 1, "blocked": 2}
+from agent_reach.stockyt.pipeline import BACKENDS, EXIT_CODES
 
 
 def _since_value(value: str) -> str:
@@ -47,6 +49,28 @@ def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="agent-reach stockyt",
                                      description="Finance-YouTube pipeline (deterministic steps)")
     sub = parser.add_subparsers(dest="command", required=True)
+
+    p_run = sub.add_parser("run", help="Run the whole pipeline into OUTPUT_DIR/runs/<label>/, or resume a run")
+    p_run.add_argument("--since", type=_since_value,
+                       help="Window start: a day (YYYYMMDD) or moment (YYYYMMDDTHHMM, in the configured timezone)")
+    p_run.add_argument("--until", type=_day_value, default=None, help="Window end, inclusive (YYYYMMDD)")
+    p_run.add_argument("--label", help="Name of the new run's folder (letters, digits, '.', '_', '-')")
+    p_run.add_argument("--resume", metavar="LABEL", help="Continue this run where it stopped")
+    p_run.add_argument("--retry-failed", action="store_true",
+                       help="With --resume: ask the LLM tasks that stayed invalid after their re-ask again")
+    p_run.add_argument("--llm", choices=BACKENDS, default=None,
+                       help="LLM backend (default: the configured llm_backend, claude-cli)")
+    p_run.add_argument("--cookies-from-browser", default=None,
+                       help="Send this browser's YouTube cookies (only with the user's OK); kept for --resume")
+
+    p_st = sub.add_parser("status", help="Show where a run stands")
+    p_st.add_argument("label")
+
+    p_rg = sub.add_parser("regrade", help="Grade a reviewed run again with the current weights and rewrite its report")
+    p_rg.add_argument("label")
+
+    p_dr = sub.add_parser("doctor", help="Check yt-dlp, the JS runtime, the output folder, claude -p and the cache")
+    p_dr.add_argument("--llm", choices=BACKENDS, default=None, help="Check this backend (default: the configured one)")
 
     p_ch = sub.add_parser("channels", help="List finance-channel uploads by recency into a links file")
     window = p_ch.add_mutually_exclusive_group(required=True)
@@ -98,6 +122,10 @@ def _parser() -> argparse.ArgumentParser:
 def main(argv: Sequence[str]) -> int:
     args = _parser().parse_args(list(argv))
     handlers = {
+        "run": _cmd_run,
+        "status": _cmd_status,
+        "regrade": _cmd_regrade,
+        "doctor": _cmd_doctor,
         "channels": _cmd_channels,
         "transcripts": _cmd_transcripts,
         "split-corpus": _cmd_split_corpus,
@@ -156,7 +184,7 @@ def _cmd_channels(args) -> int:
             for r in results
         ])
         print(f"✅ Structured channels → {args.channels_json}")
-    return _EXIT_CODES[status]
+    return EXIT_CODES[status]
 
 
 def _cmd_transcripts(args) -> int:
@@ -188,7 +216,7 @@ def _cmd_transcripts(args) -> int:
     for line in lines:
         print(line, file=sys.stderr)
     print(f"→ {args.output or 'stdout'}", file=sys.stderr)
-    return _EXIT_CODES[status]
+    return EXIT_CODES[status]
 
 
 def _cmd_split_corpus(args) -> int:
@@ -211,48 +239,29 @@ def _cmd_split_corpus(args) -> int:
 def _cmd_review_apply(args) -> int:
     """Turn each chunk's extract + review files into reviewed_NN.jsonl."""
     from agent_reach.stockyt.review import review_run
+    from agent_reach.stockyt.stages import review_lines
 
     counts = review_run(args.run_dir)
-    print(f"Reviewed {counts['reviewed_chunks']}/{counts['chunks']} chunks: "
-          f"{counts['confirmed']} confirmed · {counts['corrected']} corrected · {counts['added']} added · "
-          f"{counts['dropped']} dropped · {counts['disputed']} disputed "
-          f"(+{counts['disputed_missed']} disputed missed tickers)")
-    for problem in counts["problems"]:
-        print(f"  ❌ {problem}")
-    print("Review: OK" if counts["ok"] else "Review: FAIL — fix the chunks above and re-run review-apply")
+    for line in review_lines(counts):
+        print(line)
+    if not counts["ok"]:
+        print("Fix the chunks above and re-run review-apply")
     return 0 if counts["ok"] else 1
-
-
-def _reviewed_rows(run_dir: str) -> tuple[list[dict], dict]:
-    """Rows of every reviewed_NN.jsonl plus the review counts; raises ValueError if the review is incomplete."""
-    summary_path = os.path.join(run_dir, "review_summary.json")
-    if not os.path.exists(summary_path):
-        raise ValueError("no review_summary.json — run `agent-reach stockyt review-apply` first")
-    with open(summary_path, encoding="utf-8") as f:
-        summary = json.load(f)
-    if not summary.get("ok"):
-        raise ValueError("review_summary.json says the review is not ok — fix it and re-run review-apply")
-    rows = []
-    missing = []
-    for extract_path in sorted(glob.glob(os.path.join(run_dir, "extract_*.jsonl"))):
-        reviewed_path = os.path.join(run_dir, os.path.basename(extract_path).replace("extract_", "reviewed_", 1))
-        if not os.path.exists(reviewed_path):
-            missing.append(os.path.basename(reviewed_path))
-            continue
-        rows.extend(_read_jsonl(reviewed_path))
-    if missing:
-        raise ValueError(f"missing {', '.join(missing)}")
-    return rows, summary
 
 
 def _cmd_grade(args) -> int:
     """Grade extracted (or reviewed) ticker rows into bullish/bearish leaderboards."""
-    from agent_reach.stockyt.grading import grade, integrity, leaderboard_markdown, review_line
+    from agent_reach.stockyt.config import load_settings
+    from agent_reach.stockyt.grading import grade
+    from agent_reach.stockyt.report import console_lines, leaderboard_markdown, review_line
+    from agent_reach.stockyt.review import reviewed_rows
+    from agent_reach.stockyt.run import atomic_write_json, atomic_write_text, read_json
+    from agent_reach.stockyt.stages import chunks, extract_counts, extract_line
 
     review = None
     if args.reviewed:
         try:
-            extract_rows, review = _reviewed_rows(args.extract_dir)
+            extract_rows, review = reviewed_rows(args.extract_dir)
         except ValueError as e:
             print(f"❌ Review: FAIL — {e}", file=sys.stderr)
             return 1
@@ -261,41 +270,127 @@ def _cmd_grade(args) -> int:
         for path in sorted(glob.glob(os.path.join(args.extract_dir, "extract_*.jsonl"))):
             extract_rows.extend(_read_jsonl(path))
 
-    with open(args.authors, encoding="utf-8") as f:
-        authors = json.load(f)
-
-    result = grade(extract_rows, authors["videos_per_author"], authors["total_authors"])
+    authors = read_json(args.authors)
+    result = grade(extract_rows, authors["videos_per_author"], authors["total_authors"], load_settings().weights)
     if review is not None:
         result["review"] = review
+    counts = extract_counts(args.extract_dir) if chunks(args.extract_dir) else None
+    if counts is not None:
+        result["integrity"] = counts
 
-    integ = integrity(args.extract_dir, authors.get("N", 0))
-    if integ is not None:
-        result["integrity"] = integ
-
-    with open(args.output, "w", encoding="utf-8") as f:
-        json.dump(result, f, ensure_ascii=False, indent=2, default=str)
-
+    atomic_write_json(args.output, result)
     md_path = os.path.splitext(args.output)[0] + ".md"
-    with open(md_path, "w", encoding="utf-8") as f:
-        f.write(leaderboard_markdown(result))
+    atomic_write_text(md_path, leaderboard_markdown(result))
 
     print(f"Graded {len(extract_rows)} rows → {len(result['tickers'])} tickers")
-    print("\n=== TOP 10 BULLISH ===")
-    for i, v in enumerate(result["bullish"][:10], 1):
-        flag = " CONTESTED" if v["contested"] else ""
-        print(f"{i:2}. {v['ticker']:6} {v['tier']} {v['score']:5} | {v['breadth']}/{result['total_authors']} auth{flag} | {v['company'][:30]}")
-    print("\n=== TOP 10 BEARISH ===")
-    for i, v in enumerate(result["bearish"][:10], 1):
-        flag = " CONTESTED" if v["contested"] else ""
-        print(f"{i:2}. {v['ticker']:6} {v['tier']} {v['score']:5} | {v['breadth']}/{result['total_authors']} auth{flag} | {v['company'][:30]}")
-
+    for line in console_lines(result):
+        print(line)
     if review is not None:
         print(f"\n{review_line(review, result['disputed'])}")
-    if integ is None:
-        print("\nIntegrity: chunk files not found in --extract-dir, skipped")
-    else:
-        status = "OK" if integ["ok"] else f"FAIL missing={integ['missing']}"
-        print(f"\nIntegrity: corpus N={integ['n']} covered={integ['covered']} "
-              f"with_tickers={integ['with_tickers']} missing={integ['missing']} [{status}]")
+    print("\nIntegrity: no chunk_*.jsonl in --extract-dir, skipped" if counts is None
+          else f"\nIntegrity: {extract_line(counts)}")
     print(f"\n✅ Leaderboard → {args.output} (+ {md_path})")
+    return 1 if counts is not None and counts["extracted"] < counts["n"] else 0
+
+
+def _load_run(label: str):
+    from agent_reach.stockyt import run as run_mod
+    from agent_reach.stockyt.config import load_settings
+
+    return run_mod.open_run(load_settings().output_dir, label)
+
+
+def _cmd_run(args) -> int:
+    """Start a run (or resume one), check the setup first, then run the stages; exit 0/1/2/3."""
+    from agent_reach.stockyt import pipeline
+    from agent_reach.stockyt import run as run_mod
+    from agent_reach.stockyt.config import load_settings
+
+    if args.resume and (args.since or args.until or args.label):
+        print("❌ --resume continues a run with its own window: drop --since, --until and --label", file=sys.stderr)
+        return 1
+    if not args.resume and not (args.since and args.label):
+        print("❌ A new run needs --since and --label (or use --resume <label>)", file=sys.stderr)
+        return 1
+    if args.retry_failed and not args.resume:
+        print("❌ --retry-failed only goes with --resume", file=sys.stderr)
+        return 1
+
+    settings = load_settings()
+    backend = args.llm or settings.llm_backend
+    if not _doctor_ok(settings, backend):
+        print("❌ Fix the FAIL lines above first (agent-reach stockyt doctor)", file=sys.stderr)
+        return 1
+
+    try:
+        changes = {}
+        if args.resume:
+            run = run_mod.open_run(settings.output_dir, args.resume)
+            changes = {key: value for key, value in (("llm", args.llm), ("cookies_from_browser", args.cookies_from_browser))
+                       if value}
+        else:
+            params = {"since": args.since, "until": args.until, "llm": backend,
+                      "cookies_from_browser": args.cookies_from_browser or settings.cookies_from_browser}
+            run = run_mod.create(settings.output_dir, args.label, params, settings.snapshot())
+        print(f"Run {run.label}: {run.path}")
+        return pipeline.execute(run, params=changes, retry_failed=args.retry_failed)
+    except (FileExistsError, FileNotFoundError, ValueError, run_mod.RunLocked) as e:
+        print(f"❌ {e}", file=sys.stderr)
+        return 1
+
+
+def _cmd_status(args) -> int:
+    """Print each stage's status and gate lines, and the prompt files a waiting run needs answered."""
+    from agent_reach.stockyt import pipeline
+
+    try:
+        run = _load_run(args.label)
+    except (FileNotFoundError, ValueError) as e:
+        print(f"❌ {e}", file=sys.stderr)
+        return 1
+    params = run.data["params"]
+    print(f"Run {run.label} ({run.path}) · stockyt {run.data['stockyt_version']}")
+    print(f"Window: since {params['since']}" + (f" until {params['until']}" if params.get("until") else "")
+          + f" · LLM {params['llm']} · cookies {params.get('cookies_from_browser') or 'off'}")
+    for stage in pipeline.STAGES:
+        record = run.data["stages"].get(stage.name) or {"status": "pending", "attempts": 0, "gate_lines": []}
+        print(f"[{stage.name}] {record['status']} · attempts {record['attempts']}")
+        for line in record["gate_lines"]:
+            print(f"  {line}")
+    for prompt in pipeline.pending_prompts(run):
+        print(f"waiting: {prompt}")
     return 0
+
+
+def _cmd_regrade(args) -> int:
+    """Re-run grade + report on a reviewed run with the weights in today's config file."""
+    from agent_reach.stockyt import pipeline
+    from agent_reach.stockyt import run as run_mod
+    from agent_reach.stockyt.config import load_settings
+
+    try:
+        run = _load_run(args.label)
+        if (run.data["stages"].get("review") or {}).get("status") != "done":
+            print(f"❌ run {args.label!r} has no finished review yet: resume it first", file=sys.stderr)
+            return 1
+        return pipeline.execute(run, weights=load_settings().weights, stage_list=pipeline.STAGES[-2:], force=True)
+    except (FileNotFoundError, ValueError, run_mod.RunLocked) as e:
+        print(f"❌ {e}", file=sys.stderr)
+        return 1
+
+
+def _doctor_ok(settings, backend: str) -> bool:
+    """Print the setup checks; False when any of them failed."""
+    from agent_reach.stockyt import pipeline
+
+    checks = pipeline.doctor(settings, backend)
+    for line in pipeline.doctor_lines(checks):
+        print(line)
+    return not any(ok is False for ok, _ in checks)
+
+
+def _cmd_doctor(args) -> int:
+    from agent_reach.stockyt.config import load_settings
+
+    settings = load_settings()
+    return 0 if _doctor_ok(settings, args.llm or settings.llm_backend) else 1

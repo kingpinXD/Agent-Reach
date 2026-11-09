@@ -6,7 +6,8 @@ import json
 import pytest
 
 from agent_reach.stockyt.cli import main
-from agent_reach.stockyt.grading import grade, leaderboard_markdown
+from agent_reach.stockyt.grading import grade
+from agent_reach.stockyt.report import leaderboard_markdown
 from agent_reach.stockyt.review import apply_review, review_run
 
 
@@ -171,6 +172,7 @@ def test_incomplete_or_inconsistent_review_is_a_problem(kwargs, message):
 def _write_chunk(run_dir, nn, extract, r1=(), resp1=(), r2=None, resp2=()):
     (run_dir / f"chunk_{nn}.jsonl").write_text(json.dumps({"video_id": "v1"}) + "\n", encoding="utf-8")
     (run_dir / f"extract_{nn}.jsonl").write_text("".join(json.dumps(r) + "\n" for r in extract), encoding="utf-8")
+    (run_dir / f"extract_{nn}.videos.json").write_text(json.dumps({"v1": "done"}), encoding="utf-8")
     files = {f"review_{nn}_r1.json": list(r1), f"response_{nn}_r1.json": list(resp1),
              f"review_{nn}_r2.json": r2 or {"verdicts": [], "findings": []}, f"response_{nn}_r2.json": list(resp2)}
     for name, payload in files.items():

@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import subprocess
 from collections.abc import Iterable, Iterator, Mapping
-from datetime import date, timedelta
+from datetime import date
 
 from agent_reach.channels.youtube import _ytdlp_argv
 from agent_reach.utils.process import utf8_subprocess_env
@@ -93,12 +93,11 @@ def _parse_line(line: str, channel_id: str) -> dict | None:
 def list_channel_videos(
     channel_id: str,
     *,
-    weeks: int,
+    cutoff: date,
     cache: Mapping[str, dict] | None = None,
-    today: date | None = None,
     _lines: Iterable[str] | None = None,
 ) -> list[dict]:
-    """Recent uploads for a channel within the last `weeks`, newest-first.
+    """Uploads for a channel on or after `cutoff`, newest-first.
 
     Returns rows {video_id, upload_date (YYYYMMDD), title, channel_id}.
 
@@ -109,11 +108,9 @@ def list_channel_videos(
     <= cutoff). Otherwise a grown window (cache seeded from a smaller window) would
     stop at the first cached id and never back-fill the older in-window videos.
 
-    Bad lines (missing/`NA` date) are skipped, never fatal. `today` is injectable
-    for tests; `_lines` overrides the yt-dlp call for tests.
+    Bad lines (missing/`NA` date) are skipped, never fatal. `_lines` overrides
+    the yt-dlp call for tests.
     """
-    today = today or date.today()
-    cutoff = today - timedelta(weeks=weeks)
     cutoff_str = cutoff.strftime("%Y%m%d")
 
     lines = _lines if _lines is not None else _run_ytdlp_lines(channel_id)

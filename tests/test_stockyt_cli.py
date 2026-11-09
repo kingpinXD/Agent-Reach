@@ -2,7 +2,7 @@
 """Tests for `agent-reach stockyt` command wiring and the channels / transcripts handlers."""
 
 import json
-from datetime import date
+from datetime import date, timedelta
 from unittest.mock import patch
 
 import pytest
@@ -61,7 +61,7 @@ def test_channels_sweep_survives_one_failure(tmp_path, monkeypatch, capsys):
     cached = {"video_id": "cachedvid", "upload_date": recent, "title": "old", "channel_id": bad_id}
     cache_mod.merge(bad_id, [cached], str(tmp_path))
 
-    def fake_list(channel_id, *, weeks, cache=None, today=None):
+    def fake_list(channel_id, *, cutoff, cache=None):
         if channel_id == bad_id:
             raise RuntimeError("yt-dlp boom")
         return [{"video_id": "freshvid", "upload_date": recent, "title": "new", "channel_id": good_id}]
@@ -81,3 +81,45 @@ def test_channels_sweep_survives_one_failure(tmp_path, monkeypatch, capsys):
     assert "https://www.youtube.com/watch?v=cachedvid" in urls
     # integrity holds across the actually-emitted videos
     assert "Integrity: 2 URLs == 2 summed per-channel counts (ok)" in captured
+
+
+@pytest.fixture
+def cutoffs(monkeypatch):
+    """Record the cutoff each channel fetch receives; one channel, no network."""
+    seen = []
+    monkeypatch.setattr(stockyt_config, "CHANNELS", [("Only", "UConly")])
+
+    def fake_list(channel_id, *, cutoff, cache=None):
+        seen.append(cutoff)
+        return []
+
+    monkeypatch.setattr(channels_mod, "list_channel_videos", fake_list)
+    return seen
+
+
+def test_channels_since_passes_that_day_as_cutoff(cutoffs, tmp_path):
+    assert main(["channels", "--since", "20260616", "--no-cache", "--cache", str(tmp_path)]) == 0
+    assert cutoffs == [date(2026, 6, 16)]
+
+
+def test_channels_weeks_cutoff_is_n_weeks_before_today(cutoffs, tmp_path):
+    assert main(["channels", "--weeks", "2", "--no-cache", "--cache", str(tmp_path)]) == 0
+    assert cutoffs == [date.today() - timedelta(weeks=2)]
+
+
+@pytest.mark.parametrize(
+    "argv, message",
+    [
+        (["--weeks", "2", "--since", "20260616"], "not allowed with argument"),
+        ([], "one of the arguments --weeks --since is required"),
+        (["--since", "20261301"], "not a YYYYMMDD date: '20261301'"),
+        (["--since", "2026-06-16"], "not a YYYYMMDD date"),
+        (["--since", (date.today() + timedelta(days=1)).strftime("%Y%m%d")], "is in the future"),
+    ],
+)
+def test_channels_bad_window_is_an_error_before_any_fetch(cutoffs, tmp_path, capsys, argv, message):
+    with pytest.raises(SystemExit) as exc:
+        main(["channels", *argv, "--no-cache", "--cache", str(tmp_path)])
+    assert exc.value.code == 2
+    assert message in capsys.readouterr().err
+    assert cutoffs == []

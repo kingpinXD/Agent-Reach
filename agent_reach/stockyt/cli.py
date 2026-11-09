@@ -13,9 +13,22 @@ import json
 import os
 import sys
 from collections.abc import Sequence
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 
 from agent_reach.stockyt.cache import DEFAULT_CACHE_DIR
+
+
+def _since_date(value: str) -> date:
+    """argparse type for --since: a real, non-future YYYYMMDD day."""
+    try:
+        if len(value) != 8 or not value.isdigit():
+            raise ValueError
+        day = datetime.strptime(value, "%Y%m%d").date()
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"not a YYYYMMDD date: {value!r}") from None
+    if day > date.today():
+        raise argparse.ArgumentTypeError(f"{value} is in the future")
+    return day
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -24,7 +37,9 @@ def _parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="command", required=True)
 
     p_ch = sub.add_parser("channels", help="List finance-channel uploads by recency into a links file")
-    p_ch.add_argument("--weeks", type=int, required=True, help="Keep videos uploaded within the last N weeks")
+    window = p_ch.add_mutually_exclusive_group(required=True)
+    window.add_argument("--weeks", type=int, help="Keep videos uploaded within the last N weeks")
+    window.add_argument("--since", type=_since_date, help="Keep videos uploaded on or after this day (YYYYMMDD)")
     p_ch.add_argument("-o", "--output", default=None, help="Write watch URLs here, one per line")
     p_ch.add_argument("--cache", default=None, help=f"Cache directory (default: {DEFAULT_CACHE_DIR})")
     p_ch.add_argument("--channels-json", default=None, help="Also write a structured per-channel JSON here")
@@ -83,7 +98,8 @@ def _cmd_channels(args) -> int:
     from agent_reach.stockyt import config as stockyt_config
 
     cache_dir = args.cache or DEFAULT_CACHE_DIR
-    cutoff = (date.today() - timedelta(weeks=args.weeks)).strftime("%Y%m%d")
+    cutoff = args.since or date.today() - timedelta(weeks=args.weeks)
+    cutoff_str = cutoff.strftime("%Y%m%d")
 
     all_urls = []
     json_channels = []
@@ -92,17 +108,17 @@ def _cmd_channels(args) -> int:
     for name, channel_id in stockyt_config.CHANNELS:
         existing = None if args.no_cache else cache_mod.load(channel_id, cache_dir)
         try:
-            fresh = channels_mod.list_channel_videos(channel_id, weeks=args.weeks, cache=existing)
+            fresh = channels_mod.list_channel_videos(channel_id, cutoff=cutoff, cache=existing)
             if not args.no_cache:
                 cache_mod.merge(channel_id, fresh, cache_dir)
-                window = cache_mod.all_in_window(channel_id, cutoff, cache_dir)
+                window = cache_mod.all_in_window(channel_id, cutoff_str, cache_dir)
             else:
                 window = sorted(fresh, key=lambda r: r["upload_date"], reverse=True)
         except Exception as e:
             # One channel's transient yt-dlp failure must not abort the sweep.
             # Fall back to whatever is already cached for its window.
             failed += 1
-            window = [] if args.no_cache else cache_mod.all_in_window(channel_id, cutoff, cache_dir)
+            window = [] if args.no_cache else cache_mod.all_in_window(channel_id, cutoff_str, cache_dir)
             print(f"  ⚠️ {name}: fetch failed — {e} (kept {len(window)} cached videos in window)")
         else:
             print(f"  {name}: {len(window)} videos, oldest {window[-1]['upload_date'] if window else '—'}")

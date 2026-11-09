@@ -6,7 +6,7 @@ from datetime import date
 from agent_reach.stockyt.channels import list_channel_videos
 
 CID = "UCtest"
-TODAY = date(2026, 6, 19)  # cutoff for weeks=2 → 20260605
+CUTOFF = date(2026, 6, 5)
 
 # Newest-first, as yt-dlp prints. Includes a bad line and an old (out-of-window) line.
 LINES = [
@@ -19,7 +19,7 @@ LINES = [
 
 
 def test_window_filter_and_bad_line_tolerance():
-    rows = list_channel_videos(CID, weeks=2, today=TODAY, _lines=iter(LINES))
+    rows = list_channel_videos(CID, cutoff=CUTOFF, _lines=iter(LINES))
     ids = [r["video_id"] for r in rows]
     # bad line skipped, old line excluded by cutoff
     assert ids == ["vid_new", "vid_mid", "vid_cached"]
@@ -39,7 +39,7 @@ def test_early_stop_on_cache_hit():
         "vid_cached\t20260607\tCached hit → stop",
         "vid_extra\t20260606\tStill in window but never reached",  # not over-fetched
     ]
-    rows = list_channel_videos(CID, weeks=2, today=TODAY, cache=cache, _lines=iter(lines))
+    rows = list_channel_videos(CID, cutoff=CUTOFF, cache=cache, _lines=iter(lines))
     # stops the moment it reaches the cached id — the in-window extra is not collected
     assert [r["video_id"] for r in rows] == ["vid_new", "vid_mid"]
 
@@ -59,7 +59,7 @@ def test_grown_window_backfills_past_cached_ids():
         "older2\t20260530\tOlder but still in 3w window",
         "past\t20260520\tPast the cutoff → stop",
     ]
-    rows = list_channel_videos(CID, weeks=3, today=TODAY, cache=cache, _lines=iter(lines))
+    rows = list_channel_videos(CID, cutoff=date(2026, 5, 29), cache=cache, _lines=iter(lines))
     ids = [r["video_id"] for r in rows]
     # did NOT stop at the first cached id — backfilled the older in-window videos
     assert "older1" in ids and "older2" in ids
@@ -73,5 +73,11 @@ def test_early_stop_on_cutoff():
         "b\t20260601\tOut (before cutoff)",  # < 20260605 → stop
         "c\t20260617\tNever reached",
     ]
-    rows = list_channel_videos(CID, weeks=2, today=TODAY, _lines=iter(lines))
+    rows = list_channel_videos(CID, cutoff=CUTOFF, _lines=iter(lines))
     assert [r["video_id"] for r in rows] == ["a"]
+
+
+def test_cutoff_day_is_kept_and_the_day_before_is_not():
+    lines = ["a\t20260617\tAfter", "b\t20260616\tOn the cutoff day", "c\t20260615\tDay before"]
+    rows = list_channel_videos(CID, cutoff=date(2026, 6, 16), _lines=iter(lines))
+    assert [r["video_id"] for r in rows] == ["a", "b"]

@@ -56,51 +56,65 @@ def test_no_usable_line_is_an_error():
         list_channel_videos(CID, cutoff=CUTOFF, lines=iter(["x\tNA\tbad"]))
 
 
-def test_cutoff_day_row_is_checked_against_its_real_date():
-    # The listing date is the real date or a day late: a row on the cutoff day may be from the day before.
-    lines = ["a\t20260617\tAfter", "b\t20260616\tReally the day before", "c\t20260616\tReally on the day",
-             "d\t20260616\tDate unreadable", "e\t20260615\tBefore"]
+def _asking(times):
+    """A video_time that answers from `times` ((None, None) when absent) and records what it was asked."""
     asked = []
 
     def video_time(video_id):
         asked.append(video_id)
-        return {"b": ("20260615", 1), "c": ("20260616", 2)}.get(video_id, (None, None))
+        return times.get(video_id, (None, None))
 
+    return video_time, asked
+
+
+def test_rows_listed_up_to_two_days_after_the_cutoff_day_are_checked_against_their_real_date():
+    # The listing date is the real date or up to two days late (Stock Moe, 2026-11-09: +1 and +2).
+    lines = [
+        "far\t20260619\tListed D+3: real date is at least D, no check",
+        "d2_early\t20260618\tListed D+2, really D-1",
+        "d2_on\t20260618\tListed D+2, really D",
+        "d1_early\t20260617\tListed D+1, really D-1",
+        "d0_on\t20260616\tReally on the day",
+        "unreadable\t20260616\tDate unreadable",
+        "before\t20260615\tBefore",
+    ]
+    video_time, asked = _asking({
+        "d2_early": ("20260615", 1), "d2_on": ("20260616", 2), "d1_early": ("20260615", 3), "d0_on": ("20260616", 4),
+    })
     listing = list_channel_videos(CID, cutoff=Cutoff(date(2026, 6, 16)), lines=iter(lines), video_time=video_time)
-    assert _ids(listing) == ["a", "c", "d"]
-    assert asked == ["b", "c", "d"]  # only cutoff-day rows cost a per-video call
-    c, d = listing.rows[1], listing.rows[2]
-    assert (c["date_source"], c["timestamp"]) == ("video", 2) and "date_verified" not in c
-    assert d["date_verified"] is False and d["date_source"] == "listing"
+    assert _ids(listing) == ["far", "d2_on", "d0_on", "unreadable"]
+    assert asked == ["d2_early", "d2_on", "d1_early", "d0_on", "unreadable"]  # D+3 costs no call
+    d2_on, unreadable = listing.rows[1], listing.rows[3]
+    assert (d2_on["date_source"], d2_on["upload_date"], d2_on["timestamp"]) == ("video", "20260616", 2)
+    assert "date_verified" not in d2_on
+    assert unreadable["date_verified"] is False and unreadable["date_source"] == "listing"
 
 
-def test_time_cutoff_checks_two_days_and_keeps_rows_at_or_after_the_moment():
+def test_time_cutoff_checks_the_lag_days_and_keeps_rows_at_or_after_the_moment():
     at = datetime(2026, 11, 5, 16, 0, tzinfo=ET)  # Thursday 4pm Eastern
     cutoff = Cutoff(at.date(), at)
     ts = int(at.timestamp())
     lines = [
-        "later\t20261107\tTwo days after: no check",
+        "later\t20261108\tListed D+3: no check",
+        "d2_wed\t20261107\tListed D+2, really Wednesday",
+        "d2_thu_morning\t20261107\tListed D+2, really Thursday morning",
         "late_listed\t20261106\tReally Thursday evening",
         "friday\t20261106\tReally Friday",
         "thu_close\t20261105\tExactly at the close",
         "thu_morning\t20261105\tThursday morning",
         "wed\t20261104\tBefore the window",
     ]
-    times = {
+    video_time, asked = _asking({
+        "d2_wed": ("20261104", ts - 30 * 3600),
+        "d2_thu_morning": ("20261105", ts - 6 * 3600),
         "late_listed": ("20261105", ts + 3600),
         "friday": ("20261106", ts + 86400),
         "thu_close": ("20261105", ts),
         "thu_morning": ("20261105", ts - 6 * 3600),
-    }
-    asked = []
-
-    def video_time(video_id):
-        asked.append(video_id)
-        return times[video_id]
-
+    })
     listing = list_channel_videos(CID, cutoff=cutoff, lines=iter(lines), video_time=video_time)
     assert _ids(listing) == ["later", "late_listed", "friday", "thu_close"]
-    assert asked == ["late_listed", "friday", "thu_close", "thu_morning"]
+    assert asked == ["d2_wed", "d2_thu_morning", "late_listed", "friday", "thu_close", "thu_morning"]
     assert listing.reached_cutoff is True
 
 
@@ -114,21 +128,20 @@ def test_time_cutoff_without_a_timestamp_falls_back_to_the_date():
 
 def test_until_caps_the_window_by_real_date():
     lines = [
-        "far\t20260620\tAfter until+1: skipped, no check",
-        "edge_in\t20260611\tListed until+1, really until",
-        "edge_out\t20260611\tListed until+1, really until+1",
-        "inside\t20260608\tInside",
+        "far\t20260613\tListed until+3: skipped, no check",
+        "u2_in\t20260612\tListed until+2, really until",
+        "u2_out\t20260612\tListed until+2, really until+1",
+        "u1_in\t20260611\tListed until+1, really until",
+        "u1_out\t20260611\tListed until+1, really until+1",
+        "inside\t20260609\tInside",
         "old\t20260601\tBefore cutoff",
     ]
-    asked = []
-
-    def video_time(video_id):
-        asked.append(video_id)
-        return {"edge_in": ("20260610", 1), "edge_out": ("20260611", 2)}[video_id]
-
+    video_time, asked = _asking({
+        "u2_in": ("20260610", 1), "u2_out": ("20260611", 2), "u1_in": ("20260610", 3), "u1_out": ("20260611", 4),
+    })
     listing = list_channel_videos(CID, cutoff=CUTOFF, until="20260610", lines=iter(lines), video_time=video_time)
-    assert _ids(listing) == ["edge_in", "inside"]
-    assert asked == ["edge_in", "edge_out"]
+    assert _ids(listing) == ["u2_in", "u1_in", "inside"]
+    assert asked == ["u2_in", "u2_out", "u1_in", "u1_out"]
 
 
 @pytest.mark.parametrize("value, expected", [

@@ -1,9 +1,10 @@
 # -*- coding: utf-8 -*-
 """The channels stage: each tracked channel's uploads inside the window, from yt-dlp's flat listing.
 
-The listing (youtube.list_channel) is newest first and its date is the real upload date or one day
-late, never earlier. So the listing is read until the first row dated before the window start,
-and only rows near an edge of the window cost a per-video time check (youtube.video_time).
+The listing (youtube.list_channel) is newest first and its date is the real upload date or up to
+MAX_LISTING_LAG_DAYS late, never earlier. So the listing is read until the first row dated before the
+window start, and only rows listed within that lag of an edge of the window cost a per-video time
+check (youtube.video_time).
 """
 
 from __future__ import annotations
@@ -18,6 +19,10 @@ from agent_reach.stockyt import cache as cache_mod
 from agent_reach.stockyt import youtube
 from agent_reach.stockyt.run import LogCall
 
+# How many days after the real upload date yt-dlp's flat listing may date a video. Measured on
+# Stock Moe on 2026-11-09: listing dates were the real date +1 or +2, never earlier.
+MAX_LISTING_LAG_DAYS = 2
+
 
 @dataclass(frozen=True)
 class Cutoff:
@@ -29,14 +34,6 @@ class Cutoff:
     @property
     def day_str(self) -> str:
         return self.day.strftime("%Y%m%d")
-
-    def check_days(self) -> set[str]:
-        """Listing dates whose rows need their real time: the start day, plus the next day for a time cutoff
-        (a row listed a day late may be from before the cutoff time)."""
-        days = {self.day}
-        if self.at is not None:
-            days.add(self.day + timedelta(days=1))
-        return {d.strftime("%Y%m%d") for d in days}
 
 
 def parse_since(value: str, timezone: str) -> Cutoff:
@@ -86,21 +83,25 @@ def _parse_line(line: str, channel_id: str) -> dict | None:
     }
 
 
-def _next_day(yyyymmdd: str) -> str:
-    return (datetime.strptime(yyyymmdd, "%Y%m%d") + timedelta(days=1)).strftime("%Y%m%d")
+def _days_after(yyyymmdd: str, days: int) -> str:
+    return (datetime.strptime(yyyymmdd, "%Y%m%d") + timedelta(days=days)).strftime("%Y%m%d")
 
 
 def _in_window(row: dict, cutoff: Cutoff, until: str | None,
                video_time: Callable[[str], tuple[str | None, int | None]]) -> bool:
-    """Whether a row listed on or after the cutoff day is in the window; looks up its real time near an edge.
+    """Whether a row listed on or after the cutoff day is in the window.
 
-    A row whose real time can't be read is kept and marked `date_verified: False`.
+    A row listed within MAX_LISTING_LAG_DAYS after the cutoff day, or after `until`, may really be
+    from the other side of that edge, so its real date and time are looked up. Rows listed later than
+    that are decided by the listing date alone. A row whose real time can't be read is kept and
+    marked `date_verified: False`.
     """
     listed = row["upload_date"]
-    day_after_until = _next_day(until) if until else None
-    if day_after_until and listed > day_after_until:
+    if until and listed > _days_after(until, MAX_LISTING_LAG_DAYS):
         return False
-    if listed not in cutoff.check_days() and listed != day_after_until:
+    near_start = listed <= _days_after(cutoff.day_str, MAX_LISTING_LAG_DAYS)
+    near_end = until is not None and listed > until
+    if not (near_start or near_end):
         return True
 
     upload_date, timestamp = video_time(row["video_id"])

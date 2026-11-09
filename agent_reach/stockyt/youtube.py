@@ -197,7 +197,8 @@ def video_time(video_id: str, timeout: float = DEFAULT_TIMEOUT) -> tuple[str | N
 def list_channel(channel_id: str) -> Iterator[str]:
     """`id<TAB>upload_date<TAB>title` lines of a channel's uploads, newest first, one page at a time.
 
-    The flat listing's `approximate_date` is the real upload date or one day late.
+    The flat listing's `approximate_date` is the real upload date or up to two days late
+    (channels.MAX_LISTING_LAG_DAYS).
     """
     return stream_ytdlp([
         "--flat-playlist",

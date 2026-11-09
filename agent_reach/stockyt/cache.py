@@ -3,7 +3,7 @@
 
 One file per channel at `<cache_dir>/<channel_id>.jsonl`, each line a row
 {video_id, upload_date, title, channel_id, date_source}. `date_source` is "listing" (the flat
-listing's date, maybe a day late) or "video" (checked on the video itself); a row without one
+listing's date, maybe up to two days late) or "video" (checked on the video itself); a row without one
 reads as "listing". Merges are a lossless union — we never drop a previously cached video.
 
 The cache is only a fallback: the channels stage builds its window from a fresh listing and

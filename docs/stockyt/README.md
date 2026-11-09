@@ -215,8 +215,9 @@ them.
 `whisper = true` the program tries speech-to-text. That needs `ffmpeg` and a Groq or OpenAI key
 (`agent-reach configure groq-key`).
 
-**The listing date can be a day late.** yt-dlp's listing date is the real upload date or the next
-day. The program checks the real date of each video near the window's edges, so the window is right.
+**The listing date can be up to two days late.** yt-dlp's listing date is the real upload date or up
+to two days after it, never earlier. The program checks the real date of each video listed within two
+days of the window's edges, so the window is right.
 
 **`run` says the run is locked.** Another stockyt process is working on it. If none is, delete the
 `.lock` file the message names.

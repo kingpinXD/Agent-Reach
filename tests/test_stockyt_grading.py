@@ -79,11 +79,27 @@ def test_tier_and_normalization():
 def test_alias_and_missing_ticker():
     rows = [
         _strong("AuthorA", "GOOG", "v1", "bullish"),  # aliased to GOOGL
-        _mention("AuthorA", None, "v2", "bullish"),   # no ticker → skipped
+        _mention("AuthorA", None, "v2", "bullish", company=None),  # neither → skipped
+        _mention("AuthorA", "", "v3", "bullish", company=""),
     ]
     result = grade(rows, VPA, TOTAL)
-    assert "GOOGL" in result["tickers"]
-    assert "GOOG" not in result["tickers"]
+    assert list(result["tickers"]) == ["GOOGL"]
+
+
+def test_null_ticker_row_grades_under_its_company_name():
+    rows = [_strong("AuthorA", None, "v1", "bearish")]
+    rows[0]["company"] = "SpaceX"
+    result = grade(rows, VPA, TOTAL)
+    assert list(result["tickers"]) == ["SPACEX"]
+    assert [v["ticker"] for v in result["bearish"]] == ["SPACEX"]
+
+
+def test_null_ticker_company_row_merges_with_an_aliased_ticker_row():
+    nameless = _strong("AuthorA", None, "v1", "bearish")
+    nameless["company"] = "Space-X"
+    rows = [nameless, _strong("AuthorB", "SPCX", "v2", "bearish")]
+    spacex = grade(rows, VPA, TOTAL)["tickers"]["SPACEX"]
+    assert spacex["breadth"] == 2 and spacex["bear_breadth"] == 2
 
 
 def test_leaderboard_markdown_has_both_boards():

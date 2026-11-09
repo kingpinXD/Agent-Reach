@@ -12,6 +12,7 @@ on everything it mentions.
 
 from __future__ import annotations
 
+import re
 from collections import Counter, defaultdict
 
 from agent_reach.stockyt.config import Weights
@@ -64,10 +65,16 @@ def _context_score(row: dict, w: Weights) -> float:
 
 
 def _normalize_ticker(row: dict) -> str | None:
-    ticker = row.get("ticker")
+    """The row's ticker, or its company name when the extractor left the ticker null.
+
+    The company name is uppercased with non-alphanumerics removed ("SpaceX" -> SPACEX), so a
+    private company graded by name lands on the same key as an aliased ticker for it.
+    """
+    ticker = str(row.get("ticker") or "").upper()
+    if not ticker:
+        ticker = re.sub(r"[^A-Z0-9]", "", str(row.get("company") or "").upper())
     if not ticker:
         return None
-    ticker = str(ticker).upper()
     return ALIASES.get(ticker, ticker)
 
 

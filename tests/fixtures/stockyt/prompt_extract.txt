@@ -1,0 +1,15 @@
+SYSTEM: You extract stock, ETF and crypto tickers from finance YouTube transcripts. You answer with one JSON value that matches the given schema, and nothing else.
+
+Read every video below. For each video's transcript, identify every **publicly-investable** ticker discussed (stocks, ETFs, major crypto). For each (video, ticker) emit ONE row:
+
+{"video_id":…,"channel":…,"ticker":"<OFFICIAL UPPERCASE SYMBOL>","company":"…","asset_type":"stock|etf|crypto|index","mentions":<approx count in this video>,"sentiment":"bullish|bearish|neutral","conviction":<1-5>,"is_primary_topic":<bool>,"recommendation":"strong_buy|buy|hold|sell|strong_sell|watch|none","thesis":"<≤240-char summary of WHY they hold this stance — the actual argument, not a description>","catalyst":"<specific driver/event they cite, or null>","time_horizon":"short|medium|long|unspecified","price_target":<string or null>,"quote":"<≤200-char representative quote>"}
+
+Rules: resolve the official ticker for well-known names (nvidia→NVDA, google→GOOGL, meta→META, amd→AMD, bitcoin→BTC); only use `ticker:null` if genuinely unresolvable. De-dupe aliases within a video to ONE row (sum the mentions). `is_primary_topic` = the video is substantially ABOUT this ticker, not a name-drop in a list. `sentiment` = the author's stance on the ticker in THIS video. Use the host's stance; a guest's view is neutral unless the host adopts it. `conviction`: 5 = "my #1 pick / loading up / table-pounding", 1 = passing mention. **`thesis` is the most important field** — capture the author's actual reasoning; if they give NO reasoning (pure name-drop), set `thesis:null` and `conviction:1`. `catalyst` = the concrete reason it moves (earnings, product, Fed, regulation…), null if none stated. Skip generic market talk with no specific ticker. Do NOT summarize transcripts. `quote` must be words copied exactly from that video's transcript. To join separate passages, put " ... " between them.
+
+Answer {"videos":[{"video_id","status","rows"}]}: exactly one entry per video below. `status` is "done" when the video has rows, or "no_tickers" with `rows: []` when it discusses no specific ticker. Each row's `video_id` and `channel` are its video's.
+
+=== VIDEO video_id=v1 channel=Stock Moe ===
+Nvidia is my number one pick, I am loading up before earnings. Tesla, Google, Apple are the bigger stocks. My guest thinks Apple will crash.
+
+=== VIDEO video_id=v2 channel=Meet Kevin ===
+Today we talk about the Fed and rates. No single stock today.

@@ -1,0 +1,22 @@
+SYSTEM: You review another agent's ticker extraction from finance YouTube transcripts. You answer with one JSON value that matches the given schema, and nothing else.
+
+You are reviewing another agent's ticker extraction. Read every video's transcript and every row of the extraction below. Check two things for each video: (a) the tickers — is each row's ticker the right official symbol for what was discussed, was it really discussed, is it publicly investable, and is any discussed ticker missing; (b) the sentiment — is each row's `sentiment` the author's actual stance in THIS video. Use the host's stance; a guest's view is neutral unless the host adopts it. Report only real errors you can prove with a verbatim quote from the transcript; do not report style, thesis wording, conviction or mention counts. Answer {"findings":[…]} using ids `f1`, `f2`, … and exactly these fields: `id, video_id, ticker, issue, proposed, quote`. Answer {"findings":[]} if everything holds.
+
+Finding fields:
+- `issue` is one of `wrong_ticker` · `wrong_sentiment` · `not_discussed` (the ticker is never said in the video; a passing name-drop is said, and the extraction rules keep it as a row) · `not_investable` (not a publicly-investable stock/ETF/crypto/index) · `missed_ticker` (a discussed ticker with no row).
+- `video_id` + `ticker` name the extract row the finding is about (`ticker` is `null` for `missed_ticker`).
+- `proposed` is `{"ticker","company","asset_type"}` for `wrong_ticker`, `{"sentiment"}` for `wrong_sentiment`, a **full extract row** (same schema as the extraction, including `video_id` and `channel`) for `missed_ticker`, and `{}` otherwise. An extract row is: {"video_id":…,"channel":…,"ticker":"<OFFICIAL UPPERCASE SYMBOL>","company":"…","asset_type":"stock|etf|crypto|index","mentions":<approx count in this video>,"sentiment":"bullish|bearish|neutral","conviction":<1-5>,"is_primary_topic":<bool>,"recommendation":"strong_buy|buy|hold|sell|strong_sell|watch|none","thesis":"<≤240-char summary of WHY they hold this stance — the actual argument, not a description>","catalyst":"<specific driver/event they cite, or null>","time_horizon":"short|medium|long|unspecified","price_target":<string or null>,"quote":"<≤200-char representative quote>"}
+- `quote` is **required**: verbatim words from the transcript that support the finding.
+
+`quote` must be words copied exactly from that video's transcript. To join separate passages, put " ... " between them.
+
+=== EXTRACTION ===
+{"video_id": "v1", "channel": "Stock Moe", "ticker": "NVDA", "company": "NVDA Inc", "asset_type": "stock", "mentions": 1, "sentiment": "bullish", "conviction": 5, "is_primary_topic": false, "recommendation": "strong_buy", "thesis": "Loading up before earnings, it is the number one pick.", "catalyst": "earnings", "time_horizon": "unspecified", "price_target": null, "quote": "Nvidia is my number one pick, I am loading up before earnings."}
+{"video_id": "v1", "channel": "Stock Moe", "ticker": "TSLA", "company": "TSLA Inc", "asset_type": "stock", "mentions": 1, "sentiment": "neutral", "conviction": 1, "is_primary_topic": false, "recommendation": "none", "thesis": null, "catalyst": null, "time_horizon": "unspecified", "price_target": null, "quote": "Tesla, Google, Apple are the bigger stocks."}
+{"video_id": "v1", "channel": "Stock Moe", "ticker": "AAPL", "company": "AAPL Inc", "asset_type": "stock", "mentions": 1, "sentiment": "bearish", "conviction": 1, "is_primary_topic": false, "recommendation": "none", "thesis": null, "catalyst": null, "time_horizon": "unspecified", "price_target": null, "quote": "Tesla, Google, Apple are the bigger stocks."}
+
+=== VIDEO video_id=v1 channel=Stock Moe ===
+Nvidia is my number one pick, I am loading up before earnings. Tesla, Google, Apple are the bigger stocks. My guest thinks Apple will crash.
+
+=== VIDEO video_id=v2 channel=Meet Kevin ===
+Today we talk about the Fed and rates. No single stock today.

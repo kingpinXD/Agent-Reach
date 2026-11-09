@@ -105,24 +105,24 @@ With `--reviewed` it grades `reviewed_*.jsonl` (refusing if `review_summary.json
 - start at 0; `+0.45` if `thesis` is non-null and substantive, `+0.20` if `catalyst` non-null, `+0.15` if `price_target` non-null, `+0.10` if `is_primary_topic`, `+0.10` if `time_horizon != "unspecified"`. Clamp to 1.0.
 - A pure name-drop (no thesis/catalyst/target) scores ~0 and contributes almost nothing, no matter how many times it recurs.
 
-**Per author `a` that mentions T:**
-- `m_a` = number of DISTINCT videos by `a` mentioning T  *(repeated mentions inside one video count once — within-author saturation)*
-- `coverage_a = m_a / videos_per_author[a]`  *(0–1 — normalizes away channel volume; non-negotiable)*
-- `ctx_a` = mean `ctx` over a's mentions of T  *(how well-reasoned a's discussion is — the context signal)*
-- `conv_a` = mean conviction of a's mentions, scaled to 0–1 (`/5`)
-- `sent_a` = mean of {bullish:+1, neutral:0, bearish:−1} over a's mentions
+**Per author `a` that mentions T, on each side** (bullish, then bearish, computed separately):
+- `m_a` = number of DISTINCT videos by `a` whose row for T has that side's sentiment  *(repeated mentions inside one video count once — within-author saturation; neutral rows count on neither side)*
+- `coverage_a = m_a / (videos_per_author[a] + K)`, `K = 1`  *(normalizes away channel volume; K keeps a one-video channel from scoring full coverage)*
+- `ctx_a` = mean `ctx` over a's rows of that side  *(how well-reasoned a's case is — the context signal)*
+- `conv_a` = mean conviction of a's rows of that side, scaled to 0–1 (`/5`)
 - `strength_a = coverage_a * (0.25 + 0.75*ctx_a) * (0.5 + 0.5*conv_a)`   *(context is the dominant multiplier — a mention with no reasoning keeps only 25% of its weight even at full conviction)*
+- `sent_a` = mean of {bullish:+1, neutral:0, bearish:−1} over all a's rows (only for the contested flag)
 
 **Across authors:**
-- `bull_authors` = authors with `sent_a > 0`; `bear_authors` = authors with `sent_a < 0`
-- `bullish_score = len(bull_authors) * Σ_{a∈bull} strength_a`   *(breadth × summed strength — consensus dominates repetition)*
-- `bearish_score = len(bear_authors) * Σ_{a∈bear} strength_a`
-- `breadth = #distinct authors mentioning T` (shown as `breadth/total_authors`)
-- `contested = (len(bull_authors) ≥ 1 and len(bear_authors) ≥ 1)`
+- `bull_authors` = authors with at least one bullish video on T; `bear_authors` = at least one bearish video
+- `bullish_score = len(bull_authors) * Σ_{a∈bull} strength_a(bullish)`   *(breadth × summed strength — consensus dominates repetition)*
+- `bearish_score = len(bear_authors) * Σ_{a∈bear} strength_a(bearish)`
+- `breadth = #distinct authors mentioning T`; each board shows its side's count next to it (`2 bull · 3/5`)
+- `contested = some author has sent_a > 0 and another has sent_a < 0`
 
-Build two leaderboards: **Bullish** (sorted by `bullish_score` desc), **Bearish** (by `bearish_score` desc). A contested ticker can appear on both, flagged. Normalize each board's scores to 0–100 (relative to its max) and tier them: **S ≥ 80, A ≥ 60, B ≥ 40, C < 40**.
+Build two leaderboards: **Bullish** (sorted by `bullish_score` desc), **Bearish** (by `bearish_score` desc). A ticker can appear on both; it is flagged contested when channels disagree on net. Normalize each board's scores to 0–100 (relative to its max) and tier them: **S ≥ 80, A ≥ 60, B ≥ 40, C < 40**.
 
-Per-ticker output fields: `ticker, company, asset_type, tier, score, breadth("X/total"), authors[], n_videos_mentioning, net_sentiment, avg_conviction, avg_context, contested, top_theses[(channel, thesis)…], catalysts[], price_targets[], sample_quote, video_ids[]`. Carry the strongest theses/catalysts through so the rank is auditable — the user can see *why* a ticker ranks, not just that it does.
+Per-ticker output fields: `ticker, company, asset_type, tier, score, breadth("X/total"), authors[], n_videos_mentioning, net_sentiment, avg_conviction, avg_context, contested, bull_breadth, bear_breadth, top_theses{bullish:[(channel, thesis)…], bearish:[…]} (each sorted by ctx × conviction; each board shows its own side's first), catalysts[], price_targets[], sample_quote, video_ids[]`. Carry the strongest theses/catalysts through so the rank is auditable — the user can see *why* a ticker ranks, not just that it does.
 
 > The weights (0.5/0.5/0.25, the breadth multiplier, tier cutoffs) are intentionally explicit and tunable — keep them in one place at the top of the grading script so they're easy to adjust.
 

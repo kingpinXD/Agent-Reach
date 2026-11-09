@@ -154,8 +154,9 @@ You don't compute this by hand — `agent-reach stockyt grade` does. But when so
 
 - A stock scores on **breadth × strength**: how many different channels take a side on it, times how strong and well-reasoned each channel's take is.
 - "Well-reasoned" is the dominant factor. A mention with a real thesis, a catalyst, and a price target counts far more than a bare name-drop. A pure name-drop counts almost nothing, no matter how many times it's repeated.
-- Channels are size-normalized. Stock Moe posts ~140 videos to Joseph Carlson's ~2, so raw counts would let one loud channel dominate. The math uses "fraction of that channel's videos that mention the stock" instead.
-- A stock can appear on BOTH lists if channels disagree — it's flagged as **contested**. Those are often the most interesting.
+- Channels are size-normalized. Stock Moe posts ~140 videos to Joseph Carlson's ~2, so raw counts would let one loud channel dominate. The math uses "share of that channel's videos that take this side on the stock" instead. A bearish video counts only for the bearish list, a neutral mention for neither. One extra video is added to every channel's count, so a channel with one video in the window can't score full coverage on everything it mentions.
+- A stock can appear on BOTH lists when it has bullish and bearish videos. It's flagged as **contested** when channels disagree overall. Those are often the most interesting.
+- Each list shows its own side's strongest thesis, and its Breadth reads "2 bull · 3/5": two channels bullish, three of five mention it.
 - Rows the review dropped or left disputed count for nothing. Disputed ones show up only in the Disputed column.
 - Scores are scaled 0–100 within each list and tiered: S ≥ 80, A ≥ 60, B ≥ 40, C below 40.
 

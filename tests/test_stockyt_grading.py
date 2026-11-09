@@ -3,6 +3,8 @@
 
 import json
 
+import pytest
+
 from agent_reach.stockyt.cli import main
 from agent_reach.stockyt.grading import grade, integrity, leaderboard_markdown
 
@@ -131,3 +133,65 @@ def test_grade_cli_writes_json_md_and_integrity(tmp_path):
     result = json.loads(out.read_text(encoding="utf-8"))
     assert result["integrity"] == {"n": 2, "covered": 2, "with_tickers": 2, "missing": 0, "ok": True}
     assert "## Bullish" in (tmp_path / "graded.md").read_text(encoding="utf-8")
+
+
+# ── per-side coverage, smoothing, per-side theses and breadth ──
+
+def test_a_bearish_or_neutral_video_does_not_raise_the_bullish_score():
+    bullish_only = [_strong("AuthorA", "QQQ", "v1", "bullish"), _strong("AuthorA", "QQQ", "v2", "bullish")]
+    with_bearish = bullish_only + [_strong("AuthorA", "QQQ", "v3", "bearish")]
+    with_neutral = bullish_only + [_mention("AuthorA", "QQQ", "v4", "neutral", conviction=1)]
+    base = grade(bullish_only, VPA, TOTAL)["tickers"]["QQQ"]["bull_score"]
+    assert grade(with_bearish, VPA, TOTAL)["tickers"]["QQQ"]["bull_score"] == base
+    assert grade(with_neutral, VPA, TOTAL)["tickers"]["QQQ"]["bull_score"] == base
+
+
+def test_a_channel_with_both_sides_counts_on_each_board_but_is_not_contested_alone():
+    rows = [_strong("AuthorA", "QQQ", "v1", "bullish"), _strong("AuthorA", "QQQ", "v2", "bullish"),
+            _strong("AuthorA", "QQQ", "v3", "bearish")]
+    result = grade(rows, VPA, TOTAL)
+    qqq = result["tickers"]["QQQ"]
+    assert (qqq["bull_breadth"], qqq["bear_breadth"], qqq["breadth"]) == (1, 1, 1)
+    assert qqq["bull_score"] == 2 * qqq["bear_score"]  # two bullish videos, one bearish
+    assert ["QQQ"] == [v["ticker"] for v in result["bearish"]]
+    assert qqq["contested"] is False  # AuthorA is net bullish; nobody is net bearish
+
+
+def test_coverage_is_smoothed_by_k():
+    one_video = {"AuthorA": 1}
+    rows = [_strong("AuthorA", "HNST", "v1", "bullish")]
+    full = grade(rows, one_video, 1, k=0)["tickers"]["HNST"]["bull_score"]
+    assert grade(rows, one_video, 1)["tickers"]["HNST"]["bull_score"] == pytest.approx(full / 2)
+    assert grade(rows, one_video, 1, k=3)["tickers"]["HNST"]["bull_score"] == pytest.approx(full / 4)
+
+
+def test_smoothing_ranks_a_one_video_channel_below_a_steady_bigger_one():
+    vpa = {"Small": 1, "Big": 4}
+    rows = [_strong("Small", "ONE", "s1", "bullish")]
+    rows += [_strong("Big", "STEADY", f"b{i}", "bullish") for i in range(3)]
+    assert [v["ticker"] for v in grade(rows, vpa, 2, k=0)["bullish"]] == ["ONE", "STEADY"]
+    assert [v["ticker"] for v in grade(rows, vpa, 2)["bullish"]] == ["STEADY", "ONE"]
+
+
+def test_top_theses_are_per_side_and_strongest_first():
+    weak = _mention("AuthorA", "QQQ", "v1", "bullish", conviction=2,
+                    thesis="A weaker bullish thesis without any catalyst.")
+    strong = _strong("AuthorB", "QQQ", "v2", "bullish")
+    bear = _mention("AuthorC", "QQQ", "v3", "bearish", conviction=3,
+                    thesis="Bearish short term on the daily chart.")
+    theses = grade([weak, bear, strong], VPA, TOTAL)["tickers"]["QQQ"]["top_theses"]
+    assert theses["bullish"] == [("AuthorB", strong["thesis"]), ("AuthorA", weak["thesis"])]
+    assert theses["bearish"] == [("AuthorC", bear["thesis"])]
+
+
+def test_each_board_shows_its_own_thesis_and_side_breadth():
+    rows = [
+        _strong("AuthorA", "QQQ", "v1", "bullish"),
+        _mention("AuthorB", "QQQ", "v2", "bearish", thesis="Bearish short term on the daily chart."),
+        _mention("AuthorC", "QQQ", "v3", "neutral", conviction=1),
+    ]
+    md = leaderboard_markdown(grade(rows, VPA, TOTAL))
+    bullish, bearish = md.split("## Bearish")
+    assert "| 1 bull · 3/3 |" in bullish and "A genuinely substantive" in bullish
+    assert "| 1 bear · 3/3 |" in bearish and "Bearish short term" in bearish
+    assert "Bearish short term" not in bullish

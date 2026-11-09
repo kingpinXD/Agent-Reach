@@ -64,8 +64,9 @@ stream_ytdlp: LineStream = _stream_lines
 def replay(recordings: Mapping[str, dict]) -> tuple[Runner, LineStream]:
     """A runner and a line stream that answer from recorded yt-dlp output, keyed by the URL argument.
 
-    A recording is {"stdout": str, "files": {name: text}} — files are written into the call's
-    working folder, as yt-dlp writes caption files — or {"error": <ReachError code>, "message": str}.
+    A recording is {"stdout": str, "files": {name: text}} or {"error": <ReachError code>, "message": str}.
+    Like yt-dlp, a call writes into its working folder only the caption files (`<id>.<lang>.vtt`)
+    for the languages its `--sub-langs` asks for.
     """
 
     def recording(args: list[str]) -> dict:
@@ -79,7 +80,10 @@ def replay(recordings: Mapping[str, dict]) -> tuple[Runner, LineStream]:
 
     def run(args: list[str], timeout: float, cwd: str | None = None) -> str:
         rec = recording(args)
+        langs = args[args.index("--sub-langs") + 1].split(",") if "--sub-langs" in args else []
         for name, text in rec.get("files", {}).items():
+            if _sub_lang(name) not in langs:
+                continue
             with open(os.path.join(cwd or ".", name), "w", encoding="utf-8") as f:
                 f.write(text)
         return rec.get("stdout", "")
@@ -129,31 +133,39 @@ def fetch_captions(
     cookies_from_browser: str | None = None,
     timeout: float = DEFAULT_TIMEOUT,
 ) -> dict:
-    """One yt-dlp call: the video's captions plus its channel and upload time.
+    """The video's captions plus its channel and upload time.
 
-    Returns {text, lang, channel, channel_id, upload_date, timestamp}. `lang` is the first of
-    `langs` that has a track. Raises ReachError: NO_CAPTIONS when none of `langs` exists, or
+    One yt-dlp call per language, best first: YouTube can rate limit the auto-translated `en`
+    track while `en-orig` downloads fine, so asking for both in one call fails the whole video.
+    The next language is tried only when a call wrote no caption file; a failed call raises.
+
+    Returns {text, lang, channel, channel_id, upload_date, timestamp}; the channel and time come
+    from the first call. Raises ReachError: NO_CAPTIONS when none of `langs` exists, or
     upstream's code (RATE_LIMITED, NOT_FOUND, ...) when yt-dlp fails.
     """
-    args = [
-        "--skip-download", "--no-simulate",
-        "--write-subs", "--write-auto-subs",
-        "--sub-langs", ",".join(langs), "--sub-format", "vtt",
-        "--print", _CAPTION_PRINT,
-        "-o", "%(id)s.%(ext)s",
-    ]
-    if cookies_from_browser:
-        args += ["--cookies-from-browser", cookies_from_browser]
-    with tempfile.TemporaryDirectory(prefix="stockyt-subs-") as tmp:
-        out = run_ytdlp([*args, url], timeout, tmp)
-        files = {_sub_lang(name): name for name in os.listdir(tmp) if name.endswith(".vtt")}
-        lang = next((code for code in langs if code in files), None)
-        if lang is None:
-            raise ReachError(NO_CAPTIONS, f"no captions in {', '.join(langs)} for this video")
-        with open(os.path.join(tmp, files[lang]), encoding="utf-8", errors="replace") as f:
-            text = upstream.vtt_to_text(f.read())
+    cookies = ["--cookies-from-browser", cookies_from_browser] if cookies_from_browser else []
+    first_out = None
+    text = None
+    for lang in langs:
+        with tempfile.TemporaryDirectory(prefix="stockyt-subs-") as tmp:
+            out = run_ytdlp([
+                "--skip-download", "--no-simulate",
+                "--write-subs", "--write-auto-subs",
+                "--sub-langs", lang, "--sub-format", "vtt",
+                "--print", _CAPTION_PRINT,
+                "-o", "%(id)s.%(ext)s",
+                *cookies, url,
+            ], timeout, tmp)
+            first_out = out if first_out is None else first_out
+            vtt = next((name for name in os.listdir(tmp) if name.endswith(".vtt")), None)
+            if vtt:
+                with open(os.path.join(tmp, vtt), encoding="utf-8", errors="replace") as f:
+                    text = upstream.vtt_to_text(f.read())
+                break
+    if text is None:
+        raise ReachError(NO_CAPTIONS, f"no captions in {', '.join(langs)} for this video")
 
-    printed = next((ln for ln in reversed(out.splitlines()) if ln.strip()), "")
+    printed = next((ln for ln in reversed(first_out.splitlines()) if ln.strip()), "")
     channel, channel_id, upload_date, timestamp = (printed.split("\t") + ["", "", "", ""])[:4]
     return {
         "text": " ".join(text.splitlines()),

@@ -53,16 +53,32 @@ def test_fetch_captions_prefers_en_orig_and_reads_the_printed_fields(replay):
         "upload_date": "20261106",
         "timestamp": 1762462800,
     }
-    assert len(calls) == 1  # one yt-dlp call per video
+    assert len(calls) == 1  # en-orig exists, so en is never asked for
     args = calls[0]
-    assert args[args.index("--sub-langs") + 1] == "en-orig,en"
+    assert _sub_langs(args) == "en-orig"
     assert "--write-subs" in args and "--write-auto-subs" in args
     assert "--cookies-from-browser" not in args
 
 
-def test_fetch_captions_falls_back_to_en(replay):
-    replay({URL: {"stdout": PRINTED, "files": {f"{VID}.en.vtt": _vtt("plain")}}})
-    assert youtube.fetch_captions(URL)["lang"] == "en"
+def _sub_langs(args):
+    return args[args.index("--sub-langs") + 1]
+
+
+def test_fetch_captions_falls_back_to_en_when_there_is_no_en_orig_track(replay):
+    calls = replay({URL: {"stdout": PRINTED, "files": {f"{VID}.en.vtt": _vtt("plain")}}})
+    row = youtube.fetch_captions(URL)
+    assert (row["lang"], row["text"]) == ("en", "plain second line")
+    assert (row["channel"], row["timestamp"]) == ("Stock Moe", 1762462800)
+    assert [_sub_langs(args) for args in calls] == ["en-orig", "en"]
+
+
+def test_a_rate_limited_en_orig_call_does_not_try_en(replay):
+    # YouTube 429s the auto-translated en track while en-orig downloads fine, so one language per call.
+    calls = replay({URL: {"error": RATE_LIMITED, "message": "Unable to download video subtitles: HTTP Error 429"}})
+    with pytest.raises(ReachError) as exc:
+        youtube.fetch_captions(URL)
+    assert youtube.error_kind(exc.value) == "rate_limited"
+    assert [_sub_langs(args) for args in calls] == ["en-orig"]
 
 
 def test_fetch_captions_passes_cookies_only_when_asked(replay):

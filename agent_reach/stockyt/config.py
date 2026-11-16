@@ -33,12 +33,11 @@ CHANNELS: list[tuple[str, str]] = [
     ("ZipTrader", "UC0BGhWsIbV7Dm-lsvhdlMbA"),
 ]
 
-# The Indian market's channels. NDTV Profit and Zee Business are left out: each posts 10+ videos a
-# day from many guest analysts under one name.
+# The Indian market's channels: stock pickers only. TV news channels (CNBC-TV18, ET Now, NDTV Profit,
+# Zee Business) are left out: they post 10+ news clips a day from many guests under one name.
 INDIA_CHANNELS: list[tuple[str, str]] = [
-    ("CNBC-TV18", "UCmRbHAgG2k2vDUvb3xsEunQ"),
-    ("ET Now", "UCI_mwTKUhicNzFrhm33MzBQ"),
     ("Trade Brains", "UCzw35O6toJtjqEAAt4LTjKQ"),
+    ("Shankar Nath", "UCtnItzU7q_bA1eoEBjqcVrw"),
     ("SOIC", "UCB7GnQlJPIL6rBBqEoX87vA"),
     ("Parimal Ade", "UCUWbS9qoyLKTdOlvgK1GBlA"),
     ("Yadnya Investment Academy", "UCPohbSYq4IXhv0yxiy-sT4g"),

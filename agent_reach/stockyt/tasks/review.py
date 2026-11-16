@@ -20,6 +20,7 @@ from agent_reach.stockyt.tasks.extract import (
     QUOTE_RULE,
     ROW_FIELDS,
     SENTIMENTS,
+    market_rules,
     render_videos,
     row_errors,
 )
@@ -129,7 +130,7 @@ def _sections(*parts: str) -> str:
     return "\n\n".join(parts)
 
 
-def r1_review_prompt(records: list[dict], rows: list[dict]) -> str:
+def r1_review_prompt(records: list[dict], rows: list[dict], market: str = "us") -> str:
     return _sections(
         "You are reviewing another agent's ticker extraction. Read every video's transcript and "
         "every row of the extraction below. Check two things for each video: (a) the tickers — is "
@@ -142,13 +143,14 @@ def r1_review_prompt(records: list[dict], rows: list[dict]) -> str:
         'ticker, issue, proposed, quote`. Answer {"findings":[]} if everything holds.',
         FINDING_FIELDS,
         QUOTE_RULE,
+        *market_rules(market),
         "=== EXTRACTION ===\n" + _jsonl(rows),
         render_videos(records),
     )
 
 
 def response_prompt(records: list[dict], rows: list[dict], findings: list[dict],
-                    last_round: bool) -> str:
+                    last_round: bool, market: str = "us") -> str:
     rounds = ("This is the last round: there is no round 3." if last_round else
               "The reviewer answers your rejections in a second round.")
     return _sections(
@@ -159,6 +161,7 @@ def response_prompt(records: list[dict], rows: list[dict], findings: list[dict],
         "per finding. `quote` may be null only when you accept. You do not edit the extraction: "
         f"the program applies accepted findings. {rounds}",
         QUOTE_RULE,
+        *market_rules(market),
         "=== EXTRACTION ===\n" + _jsonl(rows),
         "=== FINDINGS ===\n" + _jsonl(findings),
         render_videos(records),
@@ -166,7 +169,7 @@ def response_prompt(records: list[dict], rows: list[dict], findings: list[dict],
 
 
 def r2_review_prompt(records: list[dict], rows_after_r1: list[dict], r1: list[dict],
-                     resp1: list[dict]) -> str:
+                     resp1: list[dict], market: str = "us") -> str:
     return _sections(
         "You reviewed another agent's ticker extraction and wrote the round-1 findings below. The "
         "extractor answered them in the round-1 responses below. The extraction below already "
@@ -179,6 +182,7 @@ def r2_review_prompt(records: list[dict], rows_after_r1: list[dict], r1: list[di
         f"usually []. {GUEST_RULE}",
         FINDING_FIELDS,
         QUOTE_RULE,
+        *market_rules(market),
         "=== EXTRACTION ===\n" + _jsonl(rows_after_r1),
         "=== ROUND-1 FINDINGS ===\n" + _jsonl(r1),
         "=== ROUND-1 RESPONSES ===\n" + _jsonl(resp1),
@@ -273,22 +277,23 @@ def validate_r2_review(answer: dict, records: list[dict], rows_after: list[dict]
     return errors + _findings_errors(answer["findings"], _R2_ID, records, rows_after)
 
 
-def r1_review_job(task_id: str, records: list[dict], rows: list[dict]) -> tuple[LLMTask, Validator]:
-    task = LLMTask(task_id, r1_review_prompt(records, rows), R1_REVIEW_SCHEMA, REVIEWER_SYSTEM)
+def r1_review_job(task_id: str, records: list[dict], rows: list[dict],
+                  market: str = "us") -> tuple[LLMTask, Validator]:
+    task = LLMTask(task_id, r1_review_prompt(records, rows, market), R1_REVIEW_SCHEMA, REVIEWER_SYSTEM)
     return task, lambda answer: validate_r1_review(answer, records, rows)
 
 
 def response_job(task_id: str, records: list[dict], rows: list[dict], findings: list[dict],
-                 last_round: bool) -> tuple[LLMTask, Validator]:
-    prompt = response_prompt(records, rows, findings, last_round)
+                 last_round: bool, market: str = "us") -> tuple[LLMTask, Validator]:
+    prompt = response_prompt(records, rows, findings, last_round, market)
     task = LLMTask(task_id, prompt, RESPONSE_SCHEMA, EXTRACTOR_SYSTEM)
     return task, lambda answer: validate_response(answer, records, findings)
 
 
 def r2_review_job(task_id: str, records: list[dict], extract_rows: list[dict], r1: list[dict],
-                  resp1: list[dict]) -> tuple[LLMTask, Validator]:
+                  resp1: list[dict], market: str = "us") -> tuple[LLMTask, Validator]:
     rows_after = rows_after_r1(extract_rows, r1, resp1)
-    task = LLMTask(task_id, r2_review_prompt(records, rows_after, r1, resp1), R2_REVIEW_SCHEMA,
+    task = LLMTask(task_id, r2_review_prompt(records, rows_after, r1, resp1, market), R2_REVIEW_SCHEMA,
                    REVIEWER_SYSTEM)
     return task, lambda answer: validate_r2_review(answer, records, rows_after, r1, resp1)
 

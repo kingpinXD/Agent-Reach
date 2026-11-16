@@ -267,3 +267,20 @@ def test_prompts_carry_the_n2_rules():
     assert "Use the host's stance; a guest's view is neutral unless the host adopts it." in extract_prompt
     review_prompt = rt.r1_review_job("r1", RECORDS, ROWS)[0].prompt
     assert "`not_discussed` (the ticker is never said in the video" in review_prompt
+
+
+def test_india_prompts_carry_the_nse_and_language_rule():
+    prompts = {
+        "extract": extract.job("e01", RECORDS, "india")[0].prompt,
+        "review_r1": rt.r1_review_job("r1", RECORDS, ROWS, "india")[0].prompt,
+        "response_r1": rt.response_job("p1", RECORDS, ROWS, R1, False, "india")[0].prompt,
+        "review_r2": rt.r2_review_job("r2", RECORDS, ROWS, R1, RESP1, "india")[0].prompt,
+    }
+    for name, prompt in prompts.items():
+        assert "NSE symbol (Reliance→RELIANCE, HDFC Bank→HDFCBANK, Infosys→INFY, Tata Motors→TATAMOTORS)" in prompt, name
+        assert "NIFTY, BANKNIFTY and SENSEX" in prompt, name
+        assert "write `company`, `thesis` and `catalyst` in English" in prompt, name
+        assert "copy `quote` verbatim in the transcript's own script" in prompt, name
+    assert "NSE" not in extract.job("e01", RECORDS)[0].prompt
+    with pytest.raises(KeyError):
+        extract.job("e01", RECORDS, "uk")

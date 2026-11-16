@@ -191,7 +191,8 @@ def write_extract(chunk_dir: str, nn: str, records: list[dict], answer: dict | N
 
 def run_extract(ctx: Ctx) -> tuple[str, list[str]]:
     by_chunk = chunks(ctx.chunk_dir)
-    answers = ask_jobs(ctx, [extract_task.job(f"extract_{nn}", records) for nn, records in by_chunk.items()])
+    answers = ask_jobs(ctx, [extract_task.job(f"extract_{nn}", records, ctx.settings.market)
+                             for nn, records in by_chunk.items()])
     pending, failures = [], {}
     for nn, records in by_chunk.items():
         answer, errors = answers[f"extract_{nn}"]
@@ -222,7 +223,7 @@ def needs_r2(r1: list[dict], resp1: list[dict]) -> bool:
 
 
 def review_chunk(nn: str, records: list[dict], rows: list[dict], ask: Callable[[Job], Answer],
-                 out_dir: str) -> tuple[str, list[str]]:
+                 out_dir: str, market: str = "us") -> tuple[str, list[str]]:
     """At most two review rounds for one chunk, as stateless calls; writes the four review files.
 
     A call with nothing to answer is skipped and code writes its empty result. Returns
@@ -239,21 +240,22 @@ def review_chunk(nn: str, records: list[dict], rows: list[dict], ask: Callable[[
             return None, ("waiting", [])
         return review_task.to_file(answer), None
 
-    r1, stop = step(review_task.r1_review_job(f"review_{nn}_r1", records, rows))
+    r1, stop = step(review_task.r1_review_job(f"review_{nn}_r1", records, rows, market))
     if stop:
         return stop
     write(f"review_{nn}_r1.json", r1)
 
     resp1: list[dict] = []
     if r1:
-        resp1, stop = step(review_task.response_job(f"response_{nn}_r1", records, rows, r1, last_round=False))
+        resp1, stop = step(review_task.response_job(f"response_{nn}_r1", records, rows, r1, last_round=False,
+                                                    market=market))
         if stop:
             return stop
     write(f"response_{nn}_r1.json", resp1)
 
     r2 = review_task.EMPTY_R2
     if needs_r2(r1, resp1):
-        r2, stop = step(review_task.r2_review_job(f"review_{nn}_r2", records, rows, r1, resp1))
+        r2, stop = step(review_task.r2_review_job(f"review_{nn}_r2", records, rows, r1, resp1, market))
         if stop:
             return stop
     write(f"review_{nn}_r2.json", r2)
@@ -262,7 +264,7 @@ def review_chunk(nn: str, records: list[dict], rows: list[dict], ask: Callable[[
     if r2["findings"]:
         rows_after = review_task.rows_after_r1(rows, r1, resp1)
         resp2, stop = step(review_task.response_job(f"response_{nn}_r2", records, rows_after, r2["findings"],
-                                                    last_round=True))
+                                                    last_round=True, market=market))
         if stop:
             return stop
     write(f"response_{nn}_r2.json", resp2)
@@ -288,7 +290,7 @@ def run_review(ctx: Ctx) -> tuple[str, list[str]]:
     def one(item) -> tuple[str, list[str]]:
         nn, records = item
         rows = read_jsonl(os.path.join(ctx.chunk_dir, f"extract_{nn}.jsonl"))
-        return review_chunk(nn, records, rows, ask, ctx.chunk_dir)
+        return review_chunk(nn, records, rows, ask, ctx.chunk_dir, ctx.settings.market)
 
     with ThreadPoolExecutor(max_workers=ctx.settings.llm_workers) as pool:
         outcomes = dict(zip(by_chunk, pool.map(one, by_chunk.items())))
@@ -330,6 +332,6 @@ def run_grade(ctx: Ctx) -> tuple[str, list[str]]:
 def run_report(ctx: Ctx) -> tuple[str, list[str]]:
     result = read_json(ctx.run.file("graded.json"))
     changes = report_mod.review_changes(ctx.chunk_dir)
-    _, md_path = report_mod.write(ctx.run.path, result, changes)
+    _, md_path = report_mod.write(ctx.run.path, result, changes, ctx.settings.market)
     return "done", [*report_mod.console_lines(result), "",
                     f"Report: {len(changes)} review changes → {md_path} [OK]"]

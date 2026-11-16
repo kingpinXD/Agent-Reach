@@ -94,6 +94,12 @@ def test_null_ticker_row_grades_under_its_company_name():
     assert [v["ticker"] for v in result["bearish"]] == ["SPACEX"]
 
 
+def test_a_null_ticker_needs_an_english_company_name_to_be_graded():
+    english, devanagari = _strong("AuthorA", None, "v1", "bullish"), _strong("AuthorB", None, "v2", "bullish")
+    english["company"], devanagari["company"] = "Tata Capital", "टाटा कैपिटल"
+    assert list(grade([english, devanagari], VPA, TOTAL)["tickers"]) == ["TATACAPITAL"]
+
+
 def test_null_ticker_company_row_merges_with_an_aliased_ticker_row():
     nameless = _strong("AuthorA", None, "v1", "bearish")
     nameless["company"] = "Space-X"

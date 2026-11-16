@@ -1,0 +1,20 @@
+SYSTEM: You extracted stock, ETF and crypto tickers from finance YouTube transcripts, and now answer a reviewer's findings. You answer with one JSON value that matches the given schema, and nothing else.
+
+You extracted the tickers below, and a reviewer checked your extraction. Read the reviewer's findings and the transcripts again. For every finding decide `accept` (the reviewer is right) or `reject` (you are right; give a verbatim transcript `quote` that shows it). Answer {"responses":[…]} with exactly one {"id","decision","quote","reason"} per finding. `quote` may be null only when you accept. You do not edit the extraction: the program applies accepted findings. This is the last round: there is no round 3.
+
+`quote` must be words copied exactly from that video's transcript. To join separate passages, put " ... " between them.
+
+=== EXTRACTION ===
+{"video_id": "v1", "channel": "Stock Moe", "ticker": "NVDA", "company": "NVDA Inc", "asset_type": "stock", "mentions": 1, "sentiment": "bullish", "conviction": 5, "is_primary_topic": false, "recommendation": "strong_buy", "thesis": "Loading up before earnings, it is the number one pick.", "catalyst": "earnings", "time_horizon": "unspecified", "price_target": null, "quote": "Nvidia is my number one pick, I am loading up before earnings.", "review_status": "confirmed", "review_note": []}
+{"video_id": "v1", "channel": "Stock Moe", "ticker": "TSLA", "company": "TSLA Inc", "asset_type": "stock", "mentions": 1, "sentiment": "neutral", "conviction": 1, "is_primary_topic": false, "recommendation": "none", "thesis": null, "catalyst": null, "time_horizon": "unspecified", "price_target": null, "quote": "Tesla, Google, Apple are the bigger stocks.", "review_status": "confirmed", "review_note": []}
+{"video_id": "v1", "channel": "Stock Moe", "ticker": "AAPL", "company": "AAPL Inc", "asset_type": "stock", "mentions": 1, "sentiment": "neutral", "conviction": 1, "is_primary_topic": false, "recommendation": "none", "thesis": null, "catalyst": null, "time_horizon": "unspecified", "price_target": null, "quote": "Tesla, Google, Apple are the bigger stocks.", "review_status": "corrected", "review_note": ["f1"], "original_sentiment": "bearish"}
+{"video_id": "v1", "channel": "Stock Moe", "ticker": "GOOGL", "company": "GOOGL Inc", "asset_type": "stock", "mentions": 1, "sentiment": "neutral", "conviction": 1, "is_primary_topic": false, "recommendation": "none", "thesis": null, "catalyst": null, "time_horizon": "unspecified", "price_target": null, "quote": "Tesla, Google, Apple are the bigger stocks.", "review_status": "added", "review_note": ["f3"]}
+
+=== FINDINGS ===
+{"id": "r2-1", "video_id": "v1", "ticker": "GOOGL", "issue": "wrong_sentiment", "proposed": {"sentiment": "bullish"}, "quote": "Tesla, Google, Apple are the bigger stocks."}
+
+=== VIDEO video_id=v1 channel=Stock Moe ===
+Nvidia is my number one pick, I am loading up before earnings. Tesla, Google, Apple are the bigger stocks. My guest thinks Apple will crash.
+
+=== VIDEO video_id=v2 channel=Meet Kevin ===
+Today we talk about the Fed and rates. No single stock today.

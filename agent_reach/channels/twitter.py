@@ -1,145 +1,91 @@
 # -*- coding: utf-8 -*-
-"""Twitter/X — check if twitter-cli or bird CLI is available."""
+"""Twitter/X — OpenCLI in the Agent Reach browser (experimental)."""
 
-from .base import Channel
-from agent_reach.probe import probe_command
+from agent_reach.backends.opencli import opencli_call, opencli_items
+from agent_reach.runtime.result import UPSTREAM_BROKEN, ReachError
+from agent_reach.utils.url import host_matches
+
+from .base import Action, Channel, Param
+
+_TWITTER_LOGIN_HINT = (
+    "Ask the user to log in to x.com in the Agent Reach dedicated browser. Never log in on their behalf."
+)
+
+
+def _x(args, timeout: float) -> list:
+    items = opencli_items(opencli_call("twitter", list(args), timeout=timeout, login_hint=_TWITTER_LOGIN_HINT))
+    if not items:
+        raise ReachError(UPSTREAM_BROKEN, "OpenCLI finished but returned no items")
+    return items
 
 
 class TwitterChannel(Channel):
     name = "twitter"
     description = "Twitter/X 推文"
-    backends = ["twitter-cli", "OpenCLI", "bird CLI (legacy)"]
-    tier = 1
+
+    # twitter-cli is not used here: even with explicit credentials it re-reads
+    # browser cookies whenever verification fails.
+    level = "experimental"
+    login_url = "https://x.com/i/flow/login"
+    tools = ("opencli",)
+    prereqs = ("node", "chrome")
+
+    def setup_problems(self):
+        from agent_reach.runtime.browser_binding import setup_problems
+
+        return setup_problems(self.name)
+
+    actions = (
+        Action(
+            "search",
+            "Search tweets",
+            (
+                Param("query", "what to search for"),
+                Param("limit", "max results", required=False, type=int, default=5),
+            ),
+            (("opencli", "_opencli_search"),),
+            live_test={"query": "openai", "limit": 2},
+            public_web=("x.com/", "twitter.com/"),
+        ),
+        Action(
+            "profile",
+            "A user's profile",
+            (Param("username", "handle without @"),),
+            (("opencli", "_opencli_profile"),),
+            live_test={"username": "OpenAI"},
+        ),
+        Action(
+            "tweets",
+            "A user's recent tweets",
+            (
+                Param("username", "handle without @"),
+                Param("limit", "max tweets", required=False, type=int, default=5),
+            ),
+            (("opencli", "_opencli_tweets"),),
+        ),
+        Action(
+            "thread",
+            "A tweet with its replies",
+            (Param("target", "tweet id or link"),),
+            (("opencli", "_opencli_thread"),),
+        ),
+    )
 
     def can_handle(self, url: str) -> bool:
-        from urllib.parse import urlparse
-        d = urlparse(url).netloc.lower()
-        return "x.com" in d or "twitter.com" in d
+        return host_matches(url, "x.com", "twitter.com")
 
-    def check(self, config=None):
-        """Probe candidates in order; first fully-usable backend wins.
+    # ── unified entry backends ──
 
-        与其他多后端渠道同一套两段式：先收集全部候选状态，第一个 ok 获胜；
-        没有 ok 才轮到第一个 warn——否则「装了但未登录」的 twitter-cli
-        会把排在后面、完整可用的 OpenCLI 挡在门外。
-        """
-        self.active_backend = None
-        findings = []
+    def _opencli_search(self, *, query: str, limit: int, timeout: float) -> list:
+        return _x(["search", query, "--limit", str(limit)], timeout)[:limit]
 
-        for backend in self.ordered_backends(config):
-            if backend == "twitter-cli":
-                result = self._check_twitter_cli()
-            elif backend == "OpenCLI":
-                result = self._check_opencli()
-            elif backend == "bird CLI (legacy)":
-                result = self._check_bird()
-            else:
-                continue
 
-            if result is None:
-                continue  # 未安装——不参与候选
-            findings.append((backend, *result))
+    def _opencli_profile(self, *, username: str, timeout: float) -> list:
+        return _x(["profile", username.lstrip("@")], timeout)[:1]
 
-        for wanted in ("ok", "warn"):
-            for backend, status, message in findings:
-                if status == wanted:
-                    self.active_backend = backend
-                    return status, message
+    def _opencli_tweets(self, *, username: str, limit: int, timeout: float) -> list:
+        return _x(["tweets", username.lstrip("@"), "--limit", str(limit)], timeout)[:limit]
 
-        if findings:  # 只剩 broken/timeout 候选
-            return "error", "\n".join(m for _, _, m in findings)
-
-        return "warn", (
-            "Twitter CLI 未安装。安装方式：\n"
-            "  pipx install twitter-cli\n"
-            "或：\n"
-            "  uv tool install twitter-cli"
-        )
-
-    def _check_twitter_cli(self):
-        """探测 twitter-cli。返回 None 表示未安装，否则返回 (status, message)。
-
-        `twitter status` 才是健康信号：已登录时输出 "ok: true"，
-        未登录时以非零退出码输出 "not_authenticated"——工具本身是活的，
-        所以 probe 的 error 状态也要看 output 内容再分类。
-        """
-        probe = probe_command(
-            "twitter", ["status"], timeout=15, retries=1, package="twitter-cli"
-        )
-        if probe.status == "missing":
-            return None
-        if probe.status == "broken":
-            return "error", "twitter-cli 命令存在但无法执行。\n" + probe.hint
-        if probe.status == "timeout":
-            return "error", "twitter-cli 健康检查超时（已重试 1 次）。\n" + probe.hint
-
-        output = probe.output
-        if "ok: true" in output:
-            return "ok", (
-                "twitter-cli 完整可用（搜索、读推文、时间线、长文/Article、"
-                "用户查询、Thread）"
-            )
-        if "not_authenticated" in output:
-            return "warn", (
-                "twitter-cli 已安装但未认证。设置方式：\n"
-                "  export TWITTER_AUTH_TOKEN=\"xxx\"\n"
-                "  export TWITTER_CT0=\"yyy\"\n"
-                "或确保已在浏览器中登录 x.com"
-            )
-        return "warn", (
-            "twitter-cli 已安装但认证检查失败。运行：\n"
-            "  twitter -v status 查看详细信息"
-        )
-
-    def _check_opencli(self):
-        """OpenCLI candidate. None = not installed."""
-        from agent_reach.backends import opencli_status
-
-        st = opencli_status()
-        if not st.installed:
-            return None
-        if st.broken:
-            return "error", st.hint
-        if st.ready:
-            return "ok", (
-                "OpenCLI 可用（复用浏览器登录态）。用法："
-                "opencli twitter search/article/user-posts -f yaml"
-            )
-        return "warn", st.hint
-
-    def _check_bird(self):
-        """探测 bird/birdx（legacy 回退）。返回 None 表示均未安装，否则返回 (status, message)。"""
-        last_failure = None
-        for cmd in ("bird", "birdx"):
-            probe = probe_command(
-                cmd, ["check"], timeout=15, retries=1, package="@steipete/bird"
-            )
-            if probe.status == "missing":
-                continue
-            if probe.status == "broken":
-                last_failure = (
-                    "error",
-                    f"{cmd} 命令存在但无法执行（bird 是 npm 包，可用 "
-                    "npm install -g @steipete/bird 重装）。\n" + probe.hint,
-                )
-                continue  # bird 坏了再试 birdx
-            if probe.status == "timeout":
-                last_failure = (
-                    "error",
-                    f"{cmd} 健康检查超时（已重试 1 次）。\n" + probe.hint,
-                )
-                continue
-
-            output = probe.output
-            if probe.ok:
-                return "ok", "bird CLI 可用（读取、搜索推文，含长文/X Article）"
-            if "Missing credentials" in output or "missing" in output.lower():
-                return "warn", (
-                    "bird CLI 已安装但未配置认证。设置环境变量：\n"
-                    "  export AUTH_TOKEN=\"xxx\"\n"
-                    "  export CT0=\"yyy\""
-                )
-            return "warn", (
-                "bird CLI 已安装但认证检查失败。"
-            )
-        return last_failure
+    def _opencli_thread(self, *, target: str, timeout: float) -> list:
+        tweet_id = str(target).rstrip("/").split("/")[-1].split("?")[0]
+        return _x(["thread", tweet_id], timeout)

@@ -1,43 +1,53 @@
-# -*- coding: utf-8 -*-
-"""LinkedIn — check if linkedin-scraper-mcp is available."""
+"""LinkedIn job actions through upstream OpenCLI and the shared Reach browser."""
+import re
+from urllib.parse import urlsplit
 
-from agent_reach.probe import probe_command
+from agent_reach.runtime.result import BAD_INPUT, ReachError
+from agent_reach.utils.url import host_matches
 
-from .base import Channel
-
-#: mcporter 是 npm 包，断链处方与默认的 pipx/uv 不同
-_MCPORTER_BROKEN_HINT = "mcporter 无法执行（node 环境损坏），重装：\n  npm install -g mcporter"
+from ._opencli_site import OpenCLISiteChannel
+from .base import Action, Param
 
 
-class LinkedInChannel(Channel):
-    name = "linkedin"
-    description = "LinkedIn 职业社交"
-    backends = ["linkedin-scraper-mcp", "Jina Reader"]
-    tier = 2
+class LinkedInChannel(OpenCLISiteChannel):
+    name = site = "linkedin"
+    description = "LinkedIn 职位搜索与详情"
+    domains = ("linkedin.com",)
+    login_hint = "linkedin.com"
+    login_url = "https://www.linkedin.com/login"
+    login_cookie = "li_at"
+    level = "optional"
+    actions = (
+        Action("jobs", "Search LinkedIn jobs", (
+            Param("query", "job keywords"), Param("location", "city or country", required=False),
+            Param("limit", "max results", required=False, type=int, default=5)),
+            (("opencli", "_jobs"),), live_test={"query": "python", "limit": 2}, timeout=120,
+            public_web=("linkedin.com/jobs/view/",)),
+        Action("read", "Read a LinkedIn job description", (Param("target", "full job URL"),),
+               (("opencli", "_read"),), timeout=90, public_web=("linkedin.com/jobs/view/",)),
+    )
 
-    def can_handle(self, url: str) -> bool:
-        from urllib.parse import urlparse
-        return "linkedin.com" in urlparse(url).netloc.lower()
+    def _jobs(self, *, query, location, limit, timeout):
+        args = ["search", query, "--limit", str(limit)]
+        if location:
+            args += ["--location", location]
+        return self._opencli(args, timeout)[:limit]
 
-    def check(self, config=None):
-        self.active_backend = None
-        probe = probe_command("mcporter", ["config", "list"], timeout=10, package="mcporter")
-        if probe.status == "missing":
-            return "off", (
-                "基本内容可通过 Jina Reader 读取。完整功能需要：\n"
-                "  pip install linkedin-scraper-mcp\n"
-                "  mcporter config add linkedin http://localhost:3000/mcp\n"
-                "  详见 https://github.com/stickerdaniel/linkedin-mcp-server"
-            )
-        if probe.status == "broken":
-            return "error", _MCPORTER_BROKEN_HINT
-        if not probe.ok:  # timeout / error
-            return "error", f"mcporter 执行异常：{probe.hint or probe.output or probe.status}"
-        if "linkedin" in probe.output.lower():
-            self.active_backend = "linkedin-scraper-mcp"
-            return "ok", "完整可用（Profile、公司、职位搜索）"
-        return "off", (
-            "mcporter 已装但 LinkedIn MCP 未配置。运行：\n"
-            "  pip install linkedin-scraper-mcp\n"
-            "  mcporter config add linkedin http://localhost:3000/mcp"
-        )
+    def _read(self, *, target, timeout):
+        if not host_matches(str(target), "linkedin.com"):
+            raise ReachError(BAD_INPUT, "Expected a linkedin.com job URL")
+        return self._opencli(["job-detail", self._job_url(str(target))], timeout)[:1]
+
+    @staticmethod
+    def _job_url(target: str) -> str:
+        if not host_matches(target, "linkedin.com"):
+            raise ReachError(BAD_INPUT, "Expected a linkedin.com job URL")
+        match = re.fullmatch(r"/jobs/view/(?:[^/]+-)?([0-9]+)/?", urlsplit(target).path)
+        if not match:
+            raise ReachError(BAD_INPUT, "Expected a LinkedIn /jobs/view/<job-id> URL")
+        # Public indexes use regional hosts and title slugs; upstream accepts IDs.
+        return "https://www.linkedin.com/jobs/view/" + match.group(1)
+
+    def validate_params(self, action, params):
+        if action == "read":
+            params["target"] = self._job_url(str(params["target"]))

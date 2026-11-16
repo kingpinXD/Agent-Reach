@@ -9,6 +9,7 @@ allowed-tools: Bash, Read, Write, Agent
 The program does every step; this skill only runs it and acts on its exit code. Manual: `docs/stockyt/README.md`.
 
 1. Run `agent-reach stockyt run --since <start> --label <label> --llm session` (or `run --resume <label>`). Use the worktree's `.venv/bin/agent-reach` if `agent-reach stockyt --help` lacks `run`. Without `--llm session`, the run calls `claude -p` itself and needs nothing from this skill.
+   For Indian channels, add `--market india` to a new run (the start is then Indian time). A resume keeps the run's market.
 2. Act on the exit code:
    - **0**: go to step 3.
    - **1**: a check failed. Show the `[stage]` lines to the user and stop. Never work around a FAIL.

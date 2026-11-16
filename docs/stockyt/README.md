@@ -37,6 +37,7 @@ Troubleshooting).
 ```bash
 agent-reach stockyt doctor
 agent-reach stockyt run --since 20261105T1600 --label postcrash
+agent-reach stockyt run --since 20261110 --label india-1110 --market india
 agent-reach stockyt run --resume postcrash
 agent-reach stockyt status postcrash
 agent-reach stockyt regrade postcrash
@@ -52,13 +53,14 @@ how fresh each channel's cache is, as information. Any `FAIL` exits 1.
 - `--until YYYYMMDD` ends the window on that day, inclusive. Without it, the window runs to today.
 - `--label` names the run's folder.
 - `--llm claude-cli|session|fake` picks the LLM backend (see below).
+- `--market us|india` picks the channels (see "Indian market"). The default is `us`.
 - `--cookies-from-browser <browser>` sends that browser's YouTube cookies. Only use it with the
   user's OK.
 
 **`run --resume <label>`** continues a run where it stopped. A stage that finished, and whose inputs
 did not change, is skipped. `--cookies-from-browser` and `--llm` can be given again here; the run
 keeps them for later resumes. `--retry-failed` asks the LLM tasks that stayed invalid after their
-re-ask again.
+re-ask again. A resume keeps the run's market: leave `--market` out, or give the same one.
 
 **`status <label>`** prints each stage's status and check lines, and any prompt files still waiting
 for an answer.
@@ -69,6 +71,29 @@ again.
 
 The single-step commands still work on their own files: `channels`, `transcripts`, `split-corpus`,
 `review-apply` and `grade`. `run` does not need them.
+
+## Indian market
+
+`--market india` runs the same stages, review and grading on Indian channels. Only the inputs and
+ticker conventions change. A US run without the flag behaves as before.
+
+What India changes:
+- **Channels:** 10 channels, set in `config.py` (`INDIA_CHANNELS`). Three speak English: CNBC-TV18,
+  ET Now, Trade Brains. Seven speak Hindi or Hinglish: SOIC, Parimal Ade, Yadnya Investment
+  Academy, FinnovationZ by Prasad, Dr. Mukul Agrawal, Rakesh Bansal, Stock Pro.
+- **Timezone:** `Asia/Kolkata`, so a `--since` time of day is Indian time.
+- **Captions:** `en-orig`, then `hi-orig`. Never the auto-translated `en` track: YouTube rate limits it.
+  A Hindi track is in Devanagari, and sometimes holds English speech written in Devanagari.
+- **Prompts:** tickers are NSE symbols (Reliance → RELIANCE, HDFC Bank → HDFCBANK); indices are
+  NIFTY, BANKNIFTY and SENSEX. Company, thesis and catalyst are written in English. A quote stays
+  word for word in the transcript's own script.
+- **Report:** the title reads "Ticker Leaderboard — India".
+
+The market is a flag, not a config key. `config.toml`'s `channels` and `timezone` apply to US runs
+only. Every other key, such as `output_dir` or `llm_workers`, applies to both. `doctor --market india`
+checks the Indian channels' cache.
+
+Members-only videos have no captions without a login. They become error rows, and the run goes on.
 
 ## Exit codes
 
@@ -90,6 +115,7 @@ program does not know is an error.
 | `timezone` | `America/New_York` | How a `--since` time of day is read |
 | `channels` | the 11 channels in `config.py` | List of `["Name", "channel id"]` pairs |
 | `lang` | `en` | Caption language. `<lang>-orig` is preferred over `<lang>` |
+| `caption_langs` | none | Caption tracks to try in order, such as `["en-orig", "hi-orig"]`. Overrides `lang` |
 | `whisper` | `false` | Fall back to Whisper speech-to-text for a video with no captions |
 | `pace_seconds` | `5.0` | Pause between yt-dlp calls |
 | `cookies_from_browser` | none | Send this browser's cookies on every run. Leave it unset; pass the flag per run instead |
@@ -210,6 +236,9 @@ on PATH; `doctor` checks it.
 **Exit 2: YouTube is rate limiting.** Many caption calls in a row get HTTP 429, and the block lasts
 hours. Waiting did not clear it before. Browser cookies did, at once. Ask the user before sending
 them.
+
+**A Hindi quote fails the check.** The quote check ignores case, punctuation, symbols and invisible
+joiners, but keeps Devanagari vowel signs. A quote with a missing vowel sign is a different word.
 
 **A video has no captions.** It becomes an error row and is skipped; the run still completes. With
 `whisper = true` the program tries speech-to-text. That needs `ffmpeg` and a Groq or OpenAI key

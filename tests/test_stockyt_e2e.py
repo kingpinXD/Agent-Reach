@@ -310,3 +310,29 @@ def test_regrade_rewrites_the_report_with_the_current_weights(out_dir, ytdlp, tm
     assert _run_json(out_dir)["config_snapshot"]["weights"]["coverage_smoothing_k"] == 0
     tickers = json.loads((out_dir / "runs" / "e2e" / "tickers.json").read_text(encoding="utf-8"))
     assert tickers["bullish"][0]["ticker"] == "NVDA"
+
+
+
+def test_a_run_from_before_markets_resumes_with_no_stage_run_again(out_dir, ytdlp, capsys):
+    ytdlp["install"](RECORDINGS)
+    assert _start() == 0
+    run_dir = out_dir / "runs" / "e2e"
+    stages = _run_json(out_dir)["stages"]
+    # The input hashes as stockyt computed them before runs had a market.
+    assert stages["channels"]["input_hash"] == "0f0fac2c9fd88d0f508cd3b8ce014134b20a08ead3a4248d2812e928dfef5484"
+    assert stages["transcripts"]["input_hash"] == pipeline.input_hash(
+        {"links": pipeline._digest([str(run_dir / "links.txt")]), "lang": "en", "whisper": False})
+
+    # Such a run's settings copy has `lang` but no `market` or `caption_langs`.
+    run_json = _run_json(out_dir)
+    for key in ("market", "caption_langs"):
+        run_json["config_snapshot"].pop(key, None)
+    (run_dir / "run.json").write_text(json.dumps(run_json), encoding="utf-8")
+    ytdlp["calls"].clear()
+    capsys.readouterr()
+
+    assert main(["run", "--resume", "e2e"]) == 0
+    out = capsys.readouterr().out
+    assert all(f"[{name}] unchanged, skipped" in out for name in ALL_STAGES)
+    assert ytdlp["calls"] == []
+    assert _llm_calls(out_dir) == ["extract_01", "review_01_r1", "response_01_r1", "review_01_r2"]

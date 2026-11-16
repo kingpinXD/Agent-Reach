@@ -100,6 +100,22 @@ EXTRACT_RULES = (
     f"{QUOTE_RULE}"
 )
 
+INDIA_RULE = (
+    "Indian market: give an Indian company its NSE symbol (Reliance→RELIANCE, HDFC Bank→HDFCBANK, "
+    "Infosys→INFY, Tata Motors→TATAMOTORS), also when its name is written in Devanagari; the "
+    "indices are NIFTY, BANKNIFTY and SENSEX. Transcripts may be in Hindi, or English written in "
+    "Devanagari: write `company`, `thesis` and `catalyst` in English, and copy `quote` verbatim in "
+    "the transcript's own script."
+)
+
+MARKET_RULES: dict[str, str | None] = {"us": None, "india": INDIA_RULE}
+
+
+def market_rules(market: str) -> list[str]:
+    """The market's extra prompt section, if it has one."""
+    rule = MARKET_RULES[market]
+    return [rule] if rule else []
+
 
 def render_videos(records: list[dict]) -> str:
     """The chunk's transcripts, one block per video."""
@@ -109,13 +125,14 @@ def render_videos(records: list[dict]) -> str:
     )
 
 
-def render_prompt(records: list[dict]) -> str:
+def render_prompt(records: list[dict], market: str = "us") -> str:
     return "\n\n".join([
         "Read every video below. For each video's transcript, identify every "
         "**publicly-investable** ticker discussed (stocks, ETFs, major crypto). For each "
         "(video, ticker) emit ONE row:",
         ROW_FIELDS,
         EXTRACT_RULES,
+        *market_rules(market),
         'Answer {"videos":[{"video_id","status","rows"}]}: exactly one entry per video below. '
         '`status` is "done" when the video has rows, or "no_tickers" with `rows: []` when it '
         "discusses no specific ticker. Each row's `video_id` and `channel` are its video's.",
@@ -123,8 +140,8 @@ def render_prompt(records: list[dict]) -> str:
     ])
 
 
-def task(task_id: str, records: list[dict]) -> LLMTask:
-    return LLMTask(id=task_id, prompt=render_prompt(records), schema=SCHEMA, system=SYSTEM)
+def task(task_id: str, records: list[dict], market: str = "us") -> LLMTask:
+    return LLMTask(id=task_id, prompt=render_prompt(records, market), schema=SCHEMA, system=SYSTEM)
 
 
 def row_errors(row: dict, video: dict, where: str) -> list[str]:
@@ -175,6 +192,6 @@ def to_rows(answer: dict) -> list[dict]:
     return [row for video in answer["videos"] for row in video["rows"]]
 
 
-def job(task_id: str, records: list[dict]) -> tuple[LLMTask, Validator]:
+def job(task_id: str, records: list[dict], market: str = "us") -> tuple[LLMTask, Validator]:
     """The task and its validator, ready for `runner.ask` / `ask_many`."""
-    return task(task_id, records), lambda answer: validate(answer, records)
+    return task(task_id, records, market), lambda answer: validate(answer, records)

@@ -7,7 +7,13 @@
 from __future__ import annotations
 
 import os
+import sys
 from dataclasses import asdict, dataclass, field, fields
+
+if sys.version_info >= (3, 11):
+    import tomllib
+else:
+    import tomli as tomllib
 
 # Where pipeline runs, outputs and the channel cache live.
 OUTPUT_DIR = os.path.expanduser("~/Documents/Claude/Cowork Projects/YoutubeSummaries")
@@ -93,15 +99,8 @@ def _known(cls, values: dict, where: str) -> dict:
 
 
 def load_settings(path: str | None = None) -> Settings:
-    """Settings from the TOML file over the code defaults; defaults alone when there is no file.
-
-    Python 3.10 has no tomllib, so there the file is not read and the defaults apply.
-    """
+    """Settings from the TOML file over the code defaults; defaults alone when there is no file."""
     path = path or DEFAULT_CONFIG_PATH
-    try:
-        import tomllib
-    except ImportError:
-        return Settings()
     try:
         with open(path, "rb") as f:
             values = tomllib.load(f)

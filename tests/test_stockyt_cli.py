@@ -22,7 +22,8 @@ from agent_reach.stockyt.upstream import RATE_LIMITED, ReachError
 def settings_file(tmp_path, monkeypatch):
     """A config file with no pause between calls and outputs under tmp_path."""
     path = tmp_path / "config.toml"
-    path.write_text(f'pace_seconds = 0\noutput_dir = "{tmp_path / "out"}"\n', encoding="utf-8")
+    out = tmp_path / "out"  # TOML literal string: Windows backslashes are not escapes
+    path.write_text(f"pace_seconds = 0\noutput_dir = '{out}'\n", encoding="utf-8")
     monkeypatch.setattr(stockyt_config, "DEFAULT_CONFIG_PATH", str(path))
     return path
 

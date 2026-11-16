@@ -145,7 +145,7 @@ def chunk_changes(r1: list[dict], resp1: list[dict], r2: dict, resp2: list[dict]
         by_id = {r.get("id"): r for r in responses}
         for finding in findings:
             outcome = _outcome(finding, by_id, round_verdicts, [])
-            if outcome in (None, "withdrawn"):
+            if outcome is None or outcome == "withdrawn":
                 continue
             row = next((r for r in reviewed if r.get("video_id") == finding["video_id"]
                         and finding["id"] in r.get("review_note", [])), None)

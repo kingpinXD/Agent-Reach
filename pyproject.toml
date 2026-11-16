@@ -33,6 +33,7 @@ dependencies = [
     "pyyaml>=6.0",
     "yt-dlp[default]==2026.8.19",
     "tzdata>=2024.1; sys_platform == 'win32'",
+    "tomli>=1.1; python_version < '3.11'",
 ]
 
 [project.optional-dependencies]

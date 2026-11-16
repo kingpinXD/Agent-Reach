@@ -336,3 +336,72 @@ def test_a_run_from_before_markets_resumes_with_no_stage_run_again(out_dir, ytdl
     assert all(f"[{name}] unchanged, skipped" in out for name in ALL_STAGES)
     assert ytdlp["calls"] == []
     assert _llm_calls(out_dir) == ["extract_01", "review_01_r1", "response_01_r1", "review_01_r2"]
+
+
+
+# ── India: two channels, one speaking Hindi (only a `hi-orig` track), one English ──
+
+INDIA_CHANNELS = [("Hindi Desk", "UChindi"), ("English Desk", "UCeng")]
+INDIA_TEXT = {"h1": ("Hindi Desk", "hi-orig", "रिलायंस में खरीदारी करें क्योंकि जियो का कारोबार बढ़ रहा है"),
+              "e1": ("English Desk", "en-orig", "HDFC Bank looks strong after the results, I am buying it.")}
+
+
+def _india_captions(video_id):
+    channel, lang, text = INDIA_TEXT[video_id]
+    return {"stdout": f"{channel}\t{dict(INDIA_CHANNELS)[channel]}\t20261108\t1762600000\n",
+            "files": {f"{video_id}.{lang}.vtt": f"WEBVTT\n\n00:00:00.000 --> 00:00:09.000\n{text}\n"}}
+
+
+INDIA_RECORDINGS = {
+    youtube.channel_url("UChindi"): _listing(("h1", "20261108"), ("old_h", "20261101")),
+    youtube.channel_url("UCeng"): _listing(("e1", "20261108"), ("old_e", "20261101")),
+    **{_url(vid): _india_captions(vid) for vid in INDIA_TEXT},
+}
+
+
+def _india_row(video_id, ticker, company, quote, thesis):
+    return {**_row("a1", ticker, company, "bullish", quote, thesis=thesis), "video_id": video_id,
+            "channel": INDIA_TEXT[video_id][0]}
+
+
+INDIA_EXTRACT = {"videos": [
+    {"video_id": "h1", "status": "done", "rows": [
+        _india_row("h1", "RELIANCE", "Reliance Industries", "रिलायंस में खरीदारी करें",
+                   "Buy Reliance because the Jio business keeps growing.")]},
+    {"video_id": "e1", "status": "done", "rows": [
+        _india_row("e1", "HDFCBANK", "HDFC Bank", "I am buying it", "Looks strong after the results.")]},
+]}
+
+
+def test_an_india_run_reads_hindi_captions_and_resumes_only_as_india(out_dir, ytdlp, monkeypatch, capsys):
+    monkeypatch.setattr(stockyt_config, "INDIA_CHANNELS", INDIA_CHANNELS)
+    prompts = []
+
+    def extract(task):
+        prompts.append(task.prompt)
+        return INDIA_EXTRACT
+
+    monkeypatch.setattr(pipeline, "FAKE_ANSWERS", {"extract_01": extract, "review_01_r1": {"findings": []}})
+    ytdlp["install"](INDIA_RECORDINGS)
+    assert main(["run", "--since", SINCE, "--label", "india", "--llm", "fake", "--market", "india"]) == 0
+
+    run_dir = out_dir / "runs" / "india"
+    run_json = _run_json(out_dir, "india")
+    assert run_json["config_snapshot"]["market"] == "india"
+    assert run_json["config_snapshot"]["timezone"] == "Asia/Kolkata"
+    rows = [json.loads(line) for line in (run_dir / "transcripts.jsonl").read_text(encoding="utf-8").splitlines()]
+    assert [(r["video_id"], r["lang"], r["channel"]) for r in rows] == [
+        ("h1", "hi-orig", "Hindi Desk"), ("e1", "en-orig", "English Desk")]
+    assert "NSE symbol" in prompts[0] and "रिलायंस में खरीदारी करें" in prompts[0]
+    report = (run_dir / "report.md").read_text(encoding="utf-8")
+    assert report.startswith("# Ticker Leaderboard — India (2 tickers · 2 authors)")
+    assert "| RELIANCE | Reliance Industries |" in report
+    capsys.readouterr()
+
+    assert main(["run", "--resume", "india"]) == 0
+    out = capsys.readouterr().out
+    assert all(f"[{name}] unchanged, skipped" in out for name in ALL_STAGES)
+    assert main(["run", "--resume", "india", "--market", "us"]) == 1
+    assert "run 'india' is for the India market: drop --market" in capsys.readouterr().err
+    assert main(["status", "india"]) == 0
+    assert "· market India" in capsys.readouterr().out

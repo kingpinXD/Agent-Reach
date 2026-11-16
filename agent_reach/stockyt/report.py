@@ -13,6 +13,7 @@ import os
 import re
 
 from agent_reach.stockyt import youtube
+from agent_reach.stockyt.config import MARKET_NAMES
 from agent_reach.stockyt.review import _outcome, chunk_files
 from agent_reach.stockyt.run import atomic_write_json, atomic_write_text, read_json, read_jsonl
 
@@ -68,16 +69,18 @@ def review_line(review: dict, disputed: dict) -> str:
     return line
 
 
-def leaderboard_markdown(result: dict) -> str:
+def leaderboard_markdown(result: dict, market: str = "us") -> str:
     """Render the graded result as a Markdown leaderboard (top 25 each board).
 
     A reviewed result (one carrying `review` counts) also gets a review line and a Disputed column.
+    The title names the market, except for us.
     """
     total_authors = result["total_authors"]
     total_tickers = len(result["tickers"])
     review = result.get("review")
     disputed = result.get("disputed", {}) if review else None
-    parts = [f"# Ticker Leaderboard ({total_tickers} tickers · {total_authors} authors)", ""]
+    title = "Ticker Leaderboard" if market == "us" else f"Ticker Leaderboard — {MARKET_NAMES[market]}"
+    parts = [f"# {title} ({total_tickers} tickers · {total_authors} authors)", ""]
     if review:
         parts += [review_line(review, disputed or {}), ""]
     parts += [
@@ -182,10 +185,10 @@ def changes_markdown(changes: list[dict]) -> str:
     return "\n".join(lines + [""])
 
 
-def write(out_dir: str, result: dict, changes: list[dict]) -> tuple[str, str]:
+def write(out_dir: str, result: dict, changes: list[dict], market: str = "us") -> tuple[str, str]:
     """Write tickers.json (the graded result plus `review_changes`) and report.md; return their paths."""
     json_path = os.path.join(out_dir, "tickers.json")
     md_path = os.path.join(out_dir, "report.md")
     atomic_write_json(json_path, {**result, "review_changes": changes})
-    atomic_write_text(md_path, leaderboard_markdown(result) + "\n" + changes_markdown(changes))
+    atomic_write_text(md_path, leaderboard_markdown(result, market) + "\n" + changes_markdown(changes))
     return json_path, md_path

@@ -332,6 +332,6 @@ def run_grade(ctx: Ctx) -> tuple[str, list[str]]:
 def run_report(ctx: Ctx) -> tuple[str, list[str]]:
     result = read_json(ctx.run.file("graded.json"))
     changes = report_mod.review_changes(ctx.chunk_dir)
-    _, md_path = report_mod.write(ctx.run.path, result, changes)
+    _, md_path = report_mod.write(ctx.run.path, result, changes, ctx.settings.market)
     return "done", [*report_mod.console_lines(result), "",
                     f"Report: {len(changes)} review changes → {md_path} [OK]"]

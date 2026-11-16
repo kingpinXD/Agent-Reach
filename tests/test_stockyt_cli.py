@@ -308,3 +308,31 @@ def test_doctor_exits_1_on_any_fail(monkeypatch, capsys):
 
 def test_help_lists_run():
     assert "finance-YouTube pipeline (run, status, regrade, doctor;" in runtime_cli.HELP
+
+
+@pytest.fixture
+def doctor_seen(monkeypatch):
+    """A failing doctor that records the settings it was given."""
+    from agent_reach.stockyt import pipeline
+
+    seen = []
+    monkeypatch.setattr(pipeline, "doctor", lambda settings, backend: seen.append(settings) or [(False, "stop")])
+    return seen
+
+
+def test_doctor_checks_the_markets_settings(doctor_seen):
+    assert main(["doctor", "--market", "india"]) == 1
+    assert main(["doctor"]) == 1
+    assert [s.market for s in doctor_seen] == ["india", "us"]
+    assert doctor_seen[0].channels == stockyt_config.INDIA_CHANNELS
+
+
+def test_run_checks_a_new_runs_market_and_a_resumed_runs_own_settings(tmp_path, doctor_seen):
+    from agent_reach.stockyt import run as run_mod
+
+    assert main(["run", "--since", "20261105", "--label", "x", "--market", "india"]) == 1
+    india = stockyt_config.apply_market(stockyt_config.Settings(), "india")
+    run_mod.create(str(tmp_path / "out"), "y", {"since": "20261105", "llm": "fake"}, india.snapshot())
+    assert main(["run", "--resume", "y"]) == 1
+    assert [(s.market, s.timezone) for s in doctor_seen] == [("india", "Asia/Kolkata")] * 2
+    assert doctor_seen[1].llm_backend == "fake"

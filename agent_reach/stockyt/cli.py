@@ -17,6 +17,7 @@ import sys
 from collections.abc import Sequence
 from datetime import date, datetime, timedelta
 
+from agent_reach.stockyt.config import MARKET_NAMES
 from agent_reach.stockyt.pipeline import BACKENDS, EXIT_CODES
 
 
@@ -62,6 +63,8 @@ def _parser() -> argparse.ArgumentParser:
                        help="LLM backend (default: the configured llm_backend, claude-cli)")
     p_run.add_argument("--cookies-from-browser", default=None,
                        help="Send this browser's YouTube cookies (only with the user's OK); kept for --resume")
+    p_run.add_argument("--market", choices=MARKET_NAMES, default=None,
+                       help="Which market's channels to read (default: us); a resume keeps the run's market")
 
     p_st = sub.add_parser("status", help="Show where a run stands")
     p_st.add_argument("label")
@@ -71,6 +74,7 @@ def _parser() -> argparse.ArgumentParser:
 
     p_dr = sub.add_parser("doctor", help="Check yt-dlp, the JS runtime, the output folder, claude -p and the cache")
     p_dr.add_argument("--llm", choices=BACKENDS, default=None, help="Check this backend (default: the configured one)")
+    p_dr.add_argument("--market", choices=MARKET_NAMES, default="us", help="Check this market's channel cache")
 
     p_ch = sub.add_parser("channels", help="List finance-channel uploads by recency into a links file")
     window = p_ch.add_mutually_exclusive_group(required=True)
@@ -304,7 +308,7 @@ def _cmd_run(args) -> int:
     """Start a run (or resume one), check the setup first, then run the stages; exit 0/1/2/3."""
     from agent_reach.stockyt import pipeline
     from agent_reach.stockyt import run as run_mod
-    from agent_reach.stockyt.config import load_settings
+    from agent_reach.stockyt.config import apply_market, load_settings
 
     if args.resume and (args.since or args.until or args.label):
         print("❌ --resume continues a run with its own window: drop --since, --until and --label", file=sys.stderr)
@@ -316,16 +320,23 @@ def _cmd_run(args) -> int:
         print("❌ --retry-failed only goes with --resume", file=sys.stderr)
         return 1
 
-    settings = load_settings()
-    backend = args.llm or settings.llm_backend
-    if not _doctor_ok(settings, backend):
-        print("❌ Fix the FAIL lines above first (agent-reach stockyt doctor)", file=sys.stderr)
-        return 1
-
     try:
+        if args.resume:
+            run = run_mod.open_run(load_settings().output_dir, args.resume)
+            settings = pipeline.settings_for(run)
+            if args.market and args.market != settings.market:
+                print(f"❌ run {run.label!r} is for the {MARKET_NAMES[settings.market]} market: drop --market "
+                      "to resume it", file=sys.stderr)
+                return 1
+        else:
+            settings = apply_market(load_settings(), args.market or "us")
+        backend = args.llm or settings.llm_backend
+        if not _doctor_ok(settings, backend):
+            print("❌ Fix the FAIL lines above first (agent-reach stockyt doctor)", file=sys.stderr)
+            return 1
+
         changes = {}
         if args.resume:
-            run = run_mod.open_run(settings.output_dir, args.resume)
             changes = {key: value for key, value in (("llm", args.llm), ("cookies_from_browser", args.cookies_from_browser))
                        if value}
         else:
@@ -349,9 +360,10 @@ def _cmd_status(args) -> int:
         print(f"❌ {e}", file=sys.stderr)
         return 1
     params = run.data["params"]
+    market = MARKET_NAMES[run.data["config_snapshot"].get("market", "us")]
     print(f"Run {run.label} ({run.path}) · stockyt {run.data['stockyt_version']}")
     print(f"Window: since {params['since']}" + (f" until {params['until']}" if params.get("until") else "")
-          + f" · LLM {params['llm']} · cookies {params.get('cookies_from_browser') or 'off'}")
+          + f" · LLM {params['llm']} · cookies {params.get('cookies_from_browser') or 'off'} · market {market}")
     for stage in pipeline.STAGES:
         record = run.data["stages"].get(stage.name) or {"status": "pending", "attempts": 0, "gate_lines": []}
         print(f"[{stage.name}] {record['status']} · attempts {record['attempts']}")
@@ -390,7 +402,7 @@ def _doctor_ok(settings, backend: str) -> bool:
 
 
 def _cmd_doctor(args) -> int:
-    from agent_reach.stockyt.config import load_settings
+    from agent_reach.stockyt.config import apply_market, load_settings
 
-    settings = load_settings()
+    settings = apply_market(load_settings(), args.market)
     return 0 if _doctor_ok(settings, args.llm or settings.llm_backend) else 1

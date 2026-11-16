@@ -58,7 +58,41 @@ def test_snapshot_is_plain_json():
     assert snap["weights"]["coverage_smoothing_k"] == 1.0
 
 
-def test_channel_lookups_still_work():
-    assert config.name_for_id("UCoMzWLaPjDJBbipihD694pQ") == "Stock Moe"
-    assert config.id_for_name("Stock Moe") == "UCoMzWLaPjDJBbipihD694pQ"
-    assert config.name_for_id("UCnope") is None
+def test_channel_name_comes_from_the_settings_channels():
+    assert config.Settings().channel_name("UCoMzWLaPjDJBbipihD694pQ") == "Stock Moe"
+    india = config.apply_market(config.Settings(), "india")
+    assert india.channel_name("UCB7GnQlJPIL6rBBqEoX87vA") == "SOIC"
+    assert india.channel_name("UCoMzWLaPjDJBbipihD694pQ") is None
+    assert config.Settings().channel_name(None) is None
+
+
+def test_india_preset_sets_channels_timezone_and_caption_tracks():
+    india = config.apply_market(config.Settings(pace_seconds=1.0), "india")
+    assert india.market == "india"
+    assert len(india.channels) == 10 and india.channels == config.INDIA_CHANNELS
+    assert india.timezone == "Asia/Kolkata"
+    assert india.caption_langs == ["en-orig", "hi-orig"]
+    assert india.pace_seconds == 1.0  # everything else is the config's
+
+
+def test_us_is_the_settings_unchanged_and_an_unknown_market_is_an_error():
+    settings = config.Settings(channels=[("Only", "UConly")], timezone="Europe/London")
+    assert config.apply_market(settings, "us") == settings
+    assert settings.market == "us" and settings.caption_langs is None
+    with pytest.raises(ValueError, match="unknown market 'uk'"):
+        config.apply_market(settings, "uk")
+
+
+def test_market_is_not_a_config_file_key(tmp_path):
+    path = tmp_path / "config.toml"
+    path.write_text('market = "india"\n', encoding="utf-8")
+    with pytest.raises(ValueError, match="--market"):
+        config.load_settings(str(path))
+
+
+def test_a_snapshot_from_before_markets_loads_as_us():
+    snap = config.Settings().snapshot()
+    del snap["market"], snap["caption_langs"]
+    assert config.Settings.from_snapshot(snap) == config.Settings()
+    india = config.apply_market(config.Settings(), "india")
+    assert config.Settings.from_snapshot(json.loads(json.dumps(india.snapshot()))) == india

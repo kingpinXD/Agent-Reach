@@ -32,6 +32,7 @@ dependencies = [
     "loguru>=0.7",
     "pyyaml>=6.0",
     "yt-dlp[default]==2026.8.19",
+    "tzdata>=2024.1; sys_platform == 'win32'",
 ]
 
 [project.optional-dependencies]

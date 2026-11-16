@@ -123,7 +123,7 @@ def out_dir(tmp_path, monkeypatch):
     out = tmp_path / "out"
     path = tmp_path / "config.toml"
     channels = ", ".join(f'["{name}", "{cid}"]' for name, cid in CHANNELS)
-    path.write_text(f'output_dir = "{out}"\npace_seconds = 0\nllm_workers = 1\nchannels = [{channels}]\n',
+    path.write_text(f"output_dir = '{out}'\npace_seconds = 0\nllm_workers = 1\nchannels = [{channels}]\n",
                     encoding="utf-8")
     monkeypatch.setattr(stockyt_config, "DEFAULT_CONFIG_PATH", str(path))
     monkeypatch.setattr(pipeline, "doctor", lambda settings, backend: [(True, "doctor stubbed")])

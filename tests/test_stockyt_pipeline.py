@@ -226,7 +226,7 @@ def test_pending_prompts_are_the_prompt_files_without_an_answer(ctx):
     session = pipeline.session_dir(ctx.run)
     for name in ("extract_01.prompt.md", "extract_01.answer.json", "extract_02.prompt.md"):
         run_mod.atomic_write_text(f"{session}/{name}", "x")
-    assert pipeline.pending_prompts(ctx.run) == [f"{session}/extract_02.prompt.md"]
+    assert pipeline.pending_prompts(ctx.run) == [os.path.join(session, "extract_02.prompt.md")]
 
 
 def test_make_backend_rejects_an_unknown_name(ctx):

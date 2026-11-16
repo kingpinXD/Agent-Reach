@@ -2,6 +2,7 @@
 """Tests for `agent-reach stockyt` command wiring and the channels / transcripts / split-corpus handlers."""
 
 import json
+import os
 from datetime import date, datetime, timedelta
 from unittest.mock import patch
 from zoneinfo import ZoneInfo
@@ -276,14 +277,15 @@ def test_status_prints_each_stage_and_the_waiting_prompts(tmp_path, capsys):
                                                       "cookies_from_browser": "chrome"}, {})
     run_mod.finish_stage(run, "channels", "done", ["Channels: 1 channels · 2 videos · 0 failed [OK]"], "h")
     run_mod.finish_stage(run, "extract", "waiting", ["Extract: 0/2 videos [FAIL]"], "h")
-    run_mod.atomic_write_text(f"{pipeline.session_dir(run)}/extract_01.prompt.md", "p")
+    prompt = os.path.join(pipeline.session_dir(run), "extract_01.prompt.md")
+    run_mod.atomic_write_text(prompt, "p")
 
     assert main(["status", "x"]) == 0
     out = capsys.readouterr().out
     assert "Window: since 20261105 · LLM session · cookies chrome" in out
     assert "[channels] done · attempts 0\n  Channels: 1 channels · 2 videos · 0 failed [OK]" in out
     assert "[transcripts] pending · attempts 0" in out
-    assert f"waiting: {pipeline.session_dir(run)}/extract_01.prompt.md" in out
+    assert f"waiting: {prompt}" in out
 
 
 def test_regrade_needs_a_finished_review(tmp_path, capsys):

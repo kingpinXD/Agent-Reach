@@ -38,3 +38,19 @@ def test_empty_quote_is_not_found():
     assert not quote_found("", TRANSCRIPT)
     assert not quote_found(" ... ", TRANSCRIPT)
     assert not quote_found(None, TRANSCRIPT)
+
+
+# ── Hindi transcripts ──
+
+def test_devanagari_vowel_signs_count():
+    assert quote_found("रिलायंस में खरीदारी", "आज रिलायंस में खरीदारी करें।")
+    assert not quote_found("रलयस म खरदर", "रिलायंस में खरीदारी करें")
+
+
+def test_a_precomposed_letter_matches_its_decomposed_form():
+    assert quote_found("\u0958", "\u0915\u093c")  # क़ written as one code point, and as क + nukta
+    assert quote_found("\u0915\u093c", "\u0958")
+
+
+def test_a_zero_width_joiner_is_ignored():
+    assert quote_found("शेयर खरीदो", "शेयर\u200d खरीदो")

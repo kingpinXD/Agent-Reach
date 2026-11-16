@@ -78,8 +78,8 @@ The single-step commands still work on their own files: `channels`, `transcripts
 ticker conventions change. A US run without the flag behaves as before.
 
 What India changes:
-- **Channels:** 10 channels, set in `config.py` (`INDIA_CHANNELS`). Three speak English: CNBC-TV18,
-  ET Now, Trade Brains. Seven speak Hindi or Hinglish: SOIC, Parimal Ade, Yadnya Investment
+- **Channels:** 9 stock-pick channels, set in `config.py` (`INDIA_CHANNELS`); TV news channels are
+  left out. Two speak English: Trade Brains, Shankar Nath. Seven speak Hindi or Hinglish: SOIC, Parimal Ade, Yadnya Investment
   Academy, FinnovationZ by Prasad, Dr. Mukul Agrawal, Rakesh Bansal, Stock Pro.
 - **Timezone:** `Asia/Kolkata`, so a `--since` time of day is Indian time.
 - **Captions:** `en-orig`, then `hi-orig`. Never the auto-translated `en` track: YouTube rate limits it.

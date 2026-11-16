@@ -69,7 +69,7 @@ def test_channel_name_comes_from_the_settings_channels():
 def test_india_preset_sets_channels_timezone_and_caption_tracks():
     india = config.apply_market(config.Settings(pace_seconds=1.0), "india")
     assert india.market == "india"
-    assert len(india.channels) == 10 and india.channels == config.INDIA_CHANNELS
+    assert len(india.channels) == 9 and india.channels == config.INDIA_CHANNELS
     assert india.timezone == "Asia/Kolkata"
     assert india.caption_langs == ["en-orig", "hi-orig"]
     assert india.pace_seconds == 1.0  # everything else is the config's

@@ -17,7 +17,7 @@ from agent_reach.stockyt.run import atomic_write_json, atomic_write_jsonl
 
 def _kept(records: list[dict]) -> list[dict]:
     """The first status=='ok' record with a transcript per video_id, order preserved."""
-    kept: dict[str, dict] = {}
+    kept: dict[str | None, dict] = {}
     for r in records:
         if r.get("status") == "ok" and r.get("transcript"):
             kept.setdefault(r.get("video_id") or r.get("url"), r)

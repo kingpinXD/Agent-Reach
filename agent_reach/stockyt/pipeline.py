@@ -48,7 +48,7 @@ class Stage:
 
 def _digest(paths: list[str]) -> dict:
     """sha256 per file, keyed by its name; a missing file reads as None."""
-    out = {}
+    out: dict[str, str | None] = {}
     for path in paths:
         try:
             with open(path, "rb") as f:
@@ -213,7 +213,7 @@ def _check_claude(settings: Settings) -> Check:
 
 
 def _cache_freshness(settings: Settings, today: date) -> list[Check]:
-    lines = []
+    lines: list[Check] = []
     for name, channel_id in settings.channels:
         rows = cache_mod.load(channel_id, settings.cache_dir)
         if not rows:

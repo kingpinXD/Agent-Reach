@@ -113,7 +113,7 @@ def _author_stats(mentions: list[dict], videos_per_author: dict, w: Weights) -> 
     """Per-author strength on each side, plus overall sentiment/context/conviction, for one ticker."""
     per_author: dict[str, list[dict]] = defaultdict(list)
     for row in mentions:
-        per_author[row.get("channel")].append(row)
+        per_author[row.get("channel") or ""].append(row)
 
     stats: dict[str, dict] = {}
     for author, rows in per_author.items():

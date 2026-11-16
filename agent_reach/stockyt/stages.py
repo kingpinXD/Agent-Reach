@@ -27,6 +27,7 @@ import time
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
+from typing import Any
 
 from agent_reach.stockyt import channels as channels_mod
 from agent_reach.stockyt import report as report_mod
@@ -85,7 +86,8 @@ class Ctx:
 def chunks(chunk_dir: str) -> dict[str, list[dict]]:
     """{NN: the chunk's transcript records}, in chunk order."""
     paths = sorted(glob.glob(os.path.join(chunk_dir, "chunk_*.jsonl")))
-    return {_CHUNK_RE.fullmatch(os.path.basename(p)).group(1): read_jsonl(p) for p in paths}
+    matches = ((_CHUNK_RE.fullmatch(os.path.basename(p)), p) for p in paths)
+    return {m.group(1): read_jsonl(p) for m, p in matches if m}
 
 
 def ask_jobs(ctx: Ctx, jobs: list[Job]) -> dict[str, Answer]:
@@ -229,7 +231,7 @@ def review_chunk(nn: str, records: list[dict], rows: list[dict], ask: Callable[[
     def write(name: str, value) -> None:
         atomic_write_json(os.path.join(out_dir, name), value)
 
-    def step(job: Job) -> tuple[object, tuple[str, list[str]] | None]:
+    def step(job: Job) -> tuple[Any, tuple[str, list[str]] | None]:
         answer, errors = ask(job)
         if errors:
             return None, ("failed", errors)
@@ -242,7 +244,7 @@ def review_chunk(nn: str, records: list[dict], rows: list[dict], ask: Callable[[
         return stop
     write(f"review_{nn}_r1.json", r1)
 
-    resp1 = []
+    resp1: list[dict] = []
     if r1:
         resp1, stop = step(review_task.response_job(f"response_{nn}_r1", records, rows, r1, last_round=False))
         if stop:
@@ -256,7 +258,7 @@ def review_chunk(nn: str, records: list[dict], rows: list[dict], ask: Callable[[
             return stop
     write(f"review_{nn}_r2.json", r2)
 
-    resp2 = []
+    resp2: list[dict] = []
     if r2["findings"]:
         rows_after = review_task.rows_after_r1(rows, r1, resp1)
         resp2, stop = step(review_task.response_job(f"response_{nn}_r2", records, rows_after, r2["findings"],

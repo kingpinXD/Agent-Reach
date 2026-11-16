@@ -55,7 +55,7 @@ def _outcome(finding: dict, responses: dict, verdicts: dict | None, problems: li
     return None
 
 
-def _mark(row: dict, status: str, fid: str) -> None:
+def _mark(row: dict, status: str, fid: str | None) -> None:
     if _RANK[status] > _RANK[row["review_status"]]:
         row["review_status"] = status
     if fid not in row["review_note"]:
@@ -173,7 +173,10 @@ def review_run(run_dir: str) -> dict:
         counts["problems"].append(f"no chunk_*.jsonl in {run_dir}")
 
     for chunk_path in chunk_paths:
-        nn = re.fullmatch(r"chunk_(\d+)\.jsonl", os.path.basename(chunk_path)).group(1)
+        match = re.fullmatch(r"chunk_(\d+)\.jsonl", os.path.basename(chunk_path))
+        if not match:
+            continue
+        nn = match.group(1)
         names = chunk_files(nn)
         paths = [os.path.join(run_dir, name) for name in names]
         missing = [name for name, path in zip(names, paths) if not os.path.exists(path)]

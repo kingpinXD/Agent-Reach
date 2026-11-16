@@ -79,7 +79,7 @@ def leaderboard_markdown(result: dict) -> str:
     disputed = result.get("disputed", {}) if review else None
     parts = [f"# Ticker Leaderboard ({total_tickers} tickers · {total_authors} authors)", ""]
     if review:
-        parts += [review_line(review, disputed), ""]
+        parts += [review_line(review, disputed or {}), ""]
     parts += [
         "## Bullish",
         "",
@@ -157,7 +157,10 @@ def review_changes(chunk_dir: str) -> list[dict]:
     """`chunk_changes` for every reviewed chunk in `chunk_dir`, in chunk order."""
     changes = []
     for reviewed_path in sorted(glob.glob(os.path.join(chunk_dir, "reviewed_*.jsonl"))):
-        nn = re.fullmatch(r"reviewed_(\d+)\.jsonl", os.path.basename(reviewed_path)).group(1)
+        match = re.fullmatch(r"reviewed_(\d+)\.jsonl", os.path.basename(reviewed_path))
+        if not match:
+            continue
+        nn = match.group(1)
         r1, resp1, r2, resp2 = (read_json(os.path.join(chunk_dir, name)) for name in chunk_files(nn)[1:])
         changes += chunk_changes(r1, resp1, r2, resp2, read_jsonl(reviewed_path))
     return changes

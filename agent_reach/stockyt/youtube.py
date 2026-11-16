@@ -165,7 +165,7 @@ def fetch_captions(
     if text is None:
         raise ReachError(NO_CAPTIONS, f"no captions in {', '.join(langs)} for this video")
 
-    printed = next((ln for ln in reversed(first_out.splitlines()) if ln.strip()), "")
+    printed = next((ln for ln in reversed((first_out or "").splitlines()) if ln.strip()), "")
     channel, channel_id, upload_date, timestamp = (printed.split("\t") + ["", "", "", ""])[:4]
     return {
         "text": " ".join(text.splitlines()),

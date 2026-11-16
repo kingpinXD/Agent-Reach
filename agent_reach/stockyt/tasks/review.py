@@ -115,7 +115,7 @@ FINDING_FIELDS = "\n".join([
     "- `quote` is **required**: verbatim words from the transcript that support the finding.",
 ])
 
-EMPTY_R2 = {"verdicts": [], "findings": []}
+EMPTY_R2: dict[str, list] = {"verdicts": [], "findings": []}
 
 _F_ID = re.compile(r"f\d+")
 _R2_ID = re.compile(r"r2-\d+")

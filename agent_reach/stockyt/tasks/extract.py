@@ -159,7 +159,7 @@ def validate(answer: dict, records: list[dict]) -> list[str]:
         rows = video["rows"]
         if (video["status"] == "no_tickers") != (not rows):
             errors.append(f"{where}: status {video['status']!r} does not match {len(rows)} rows")
-        tickers = [_normalize_ticker(row) for row in rows if row.get("ticker")]
+        tickers = [t for t in (_normalize_ticker(row) for row in rows if row.get("ticker")) if t]
         errors += [f"{where}: ticker {t} has more than one row" for t in sorted(set(tickers))
                    if tickers.count(t) > 1]
         for j, row in enumerate(rows):

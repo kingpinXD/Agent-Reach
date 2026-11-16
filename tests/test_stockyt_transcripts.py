@@ -6,7 +6,7 @@ import json
 import pytest
 
 from agent_reach.stockyt import youtube
-from agent_reach.stockyt.config import Settings
+from agent_reach.stockyt.config import Settings, apply_market
 from agent_reach.stockyt.transcripts import (
     check,
     dedupe_links,
@@ -132,6 +132,59 @@ def test_fetch_all_stops_at_the_first_rate_limit(captions, tmp_path):
                      sleep=lambda s: None, log=lambda kind, vid, dur, outcome: logged.append((kind, vid, outcome)))
     assert [r["video_id"] for r in rows] == ["v1", "v2"]
     assert logged == [("captions", "v1", "ok"), ("captions", "v2", "rate_limited")]
+
+
+# ── India: caption tracks by list, on recorded yt-dlp output ──
+
+INDIA = apply_market(Settings(pace_seconds=0), "india")
+SOIC = "UCB7GnQlJPIL6rBBqEoX87vA"
+
+
+@pytest.fixture
+def ytdlp(monkeypatch):
+    """Swap youtube.run_ytdlp; `install(recordings)` answers from them, and `calls` logs each --sub-langs."""
+    state: dict = {"calls": []}
+
+    def install(recordings):
+        run, _ = youtube.replay(recordings)
+
+        def logged(args, timeout, cwd=None):
+            state["calls"].append(args[args.index("--sub-langs") + 1])
+            return run(args, timeout, cwd)
+
+        monkeypatch.setattr(youtube, "run_ytdlp", logged)
+
+    state["install"] = install
+    return state
+
+
+def test_india_takes_the_hindi_track_and_never_asks_for_translated_english(ytdlp):
+    vtt = "WEBVTT\n\n00:00:00.000 --> 00:00:02.000\nरिलायंस में खरीदारी करें\n"
+    ytdlp["install"]({_url("h1"): {"stdout": f"SOIC\t{SOIC}\t20261106\t1762462800\n",
+                                   "files": {"h1.en.vtt": "WEBVTT\n\nmachine translated\n", "h1.hi-orig.vtt": vtt}}})
+    row = fetch_row(_url("h1"), INDIA)
+    assert (row["status"], row["lang"], row["transcript"], row["channel"]) == (
+        "ok", "hi-orig", "रिलायंस में खरीदारी करें", "SOIC")
+    assert ytdlp["calls"] == ["en-orig", "hi-orig"]
+
+
+def test_a_members_only_video_is_an_error_row_and_the_stage_goes_on(ytdlp, tmp_path, monkeypatch):
+    vtt = "WEBVTT\n\n00:00:00.000 --> 00:00:02.000\nwords\n"
+    ytdlp["install"]({_url("ok1"): {"stdout": f"SOIC\t{SOIC}\t20261106\t1762462800\n",
+                                    "files": {"ok1.en-orig.vtt": vtt}}})
+    replayed = youtube.run_ytdlp
+
+    def members_only(args, timeout, cwd=None):
+        if args[-1] == _url("m1"):
+            raise RuntimeError("Join this channel to get access to members-only content")
+        return replayed(args, timeout, cwd)
+
+    monkeypatch.setattr(youtube, "run_ytdlp", members_only)
+    links = [_url("m1"), _url("ok1")]
+    rows = fetch_all(links, str(tmp_path / "t.jsonl"), INDIA)
+    assert [(r["video_id"], r["status"], r["error_kind"]) for r in rows] == [
+        ("m1", "error", "other"), ("ok1", "ok", None)]
+    assert check(links, rows)[0] == "done"
 
 
 def test_read_rows_keeps_the_latest_row_per_video(tmp_path):

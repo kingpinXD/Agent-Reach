@@ -67,14 +67,21 @@ def _llm_inputs(ctx: Ctx, *patterns: str) -> dict:
             "version": STOCKYT_VERSION}
 
 
+def _transcripts_inputs(ctx: Ctx) -> dict:
+    """The caption tracks count only when set, so a run started before they existed keeps its hash."""
+    inputs = {"links": _digest([ctx.run.file("links.txt")]), "lang": ctx.settings.lang,
+              "whisper": ctx.settings.whisper}
+    if ctx.settings.caption_langs:
+        inputs["caption_langs"] = ctx.settings.caption_langs
+    return inputs
+
+
 STAGES: list[Stage] = [
     Stage("channels", stages.run_channels,
           lambda ctx: {"since": ctx.run.data["params"]["since"], "until": ctx.run.data["params"].get("until"),
                        "channels": ctx.settings.channels, "timezone": ctx.settings.timezone},
           lambda ctx: [ctx.run.file("links.txt"), ctx.run.file("channels.json")]),
-    Stage("transcripts", stages.run_transcripts,
-          lambda ctx: {"links": _digest([ctx.run.file("links.txt")]), "lang": ctx.settings.lang,
-                       "whisper": ctx.settings.whisper},
+    Stage("transcripts", stages.run_transcripts, _transcripts_inputs,
           lambda ctx: [ctx.run.file("transcripts.jsonl")]),
     Stage("corpus", stages.run_corpus,
           lambda ctx: {"transcripts": _digest([ctx.run.file("transcripts.jsonl")]),

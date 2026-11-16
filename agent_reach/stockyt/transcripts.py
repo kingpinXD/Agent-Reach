@@ -107,8 +107,8 @@ def fetch_row(url: str, settings: Settings, attempts: int = 1) -> dict:
         row.update(error="not a YouTube video link", error_kind="other")
         return row
     try:
-        captions = youtube.fetch_captions(youtube.watch_url(video_id), youtube.caption_langs(settings.lang),
-                                          settings.cookies_from_browser)
+        langs = tuple(settings.caption_langs or youtube.caption_langs(settings.lang))
+        captions = youtube.fetch_captions(youtube.watch_url(video_id), langs, settings.cookies_from_browser)
     except Exception as e:
         row.update(error=str(e), error_kind=youtube.error_kind(e))
         if row["error_kind"] == "no_captions" and settings.whisper:
